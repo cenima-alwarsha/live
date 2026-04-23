@@ -114,6 +114,7 @@ const dom = {
   hostMovieName: document.getElementById("hostMovieName"),
   hostTimeLabel: document.getElementById("hostTimeLabel"),
   hostPlayPauseButton: document.getElementById("hostPlayPauseButton"),
+  hostFullscreenButton: document.getElementById("hostFullscreenButton"),
   replaceMovieButton: document.getElementById("replaceMovieButton"),
   hostSeekBar: document.getElementById("hostSeekBar"),
   hostReloadNotice: document.getElementById("hostReloadNotice"),
@@ -274,6 +275,10 @@ function attachEvents() {
     revealHostControls();
     await toggleHostPlayback();
   });
+  dom.hostFullscreenButton.addEventListener("click", async () => {
+    revealHostControls();
+    await toggleMediaFullscreen();
+  });
   dom.hostSeekBar.addEventListener("input", () => {
     revealHostControls();
     handleHostSeek();
@@ -320,6 +325,7 @@ function attachEvents() {
       toggleHostControls();
       return;
     }
+    attemptRemotePlayback();
     toggleViewerControls();
   });
 
@@ -620,12 +626,11 @@ function updateModeUi() {
     "hidden",
     !(state.isHost && state.screen === "room" && !state.localPrepared)
   );
-  dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || !state.viewerRemoteStream);
+  if (state.isHost || !state.viewerRemoteStream) {
+    dom.playUnlockOverlay.classList.add("hidden");
+  }
   if (!showHostControls) {
     hideHostControls();
-  }
-  if (state.isHost) {
-    setTheaterMode(false);
   }
   syncViewerExpandState();
   updateWaitingOverlay();
@@ -1876,8 +1881,11 @@ function startViewerCanvasLoop() {
       dom.viewerCanvas.height = nextHeight;
     }
 
+    context.fillStyle = "#02060b";
+    context.fillRect(0, 0, dom.viewerCanvas.width, dom.viewerCanvas.height);
+
     if (dom.remoteVideo.readyState >= 2 && dom.remoteVideo.videoWidth > 0) {
-      context.drawImage(dom.remoteVideo, 0, 0, dom.viewerCanvas.width, dom.viewerCanvas.height);
+      drawVideoContain(context, dom.remoteVideo, dom.viewerCanvas.width, dom.viewerCanvas.height);
     } else {
       context.clearRect(0, 0, dom.viewerCanvas.width, dom.viewerCanvas.height);
     }
@@ -1886,6 +1894,25 @@ function startViewerCanvasLoop() {
   };
 
   draw();
+}
+
+function drawVideoContain(context, video, canvasWidth, canvasHeight) {
+  const videoWidth = video.videoWidth || canvasWidth;
+  const videoHeight = video.videoHeight || canvasHeight;
+  const videoRatio = videoWidth / videoHeight;
+  const canvasRatio = canvasWidth / canvasHeight;
+
+  let drawWidth = canvasWidth;
+  let drawHeight = canvasHeight;
+  if (videoRatio > canvasRatio) {
+    drawHeight = canvasWidth / videoRatio;
+  } else {
+    drawWidth = canvasHeight * videoRatio;
+  }
+
+  const drawX = (canvasWidth - drawWidth) / 2;
+  const drawY = (canvasHeight - drawHeight) / 2;
+  context.drawImage(video, drawX, drawY, drawWidth, drawHeight);
 }
 
 function stopViewerCanvasLoop() {
@@ -1961,10 +1988,16 @@ function focusChatComposer() {
 }
 
 async function toggleViewerFullscreen() {
+  await toggleMediaFullscreen();
+  if (!state.isHost) {
+    revealViewerControls();
+  }
+}
+
+async function toggleMediaFullscreen() {
   if (document.fullscreenElement) {
     await document.exitFullscreen().catch(() => {});
     syncViewerExpandState();
-    revealViewerControls();
     return;
   }
 
@@ -1985,11 +2018,10 @@ async function toggleViewerFullscreen() {
   }
 
   syncViewerExpandState();
-  revealViewerControls();
 }
 
 function setTheaterMode(enabled) {
-  document.body.classList.toggle("theater-mode", enabled && !state.isHost && state.screen === "room");
+  document.body.classList.toggle("theater-mode", enabled && state.screen === "room");
   syncViewerExpandState();
 }
 
@@ -1997,23 +2029,30 @@ function syncViewerExpandState() {
   const expanded = !!document.fullscreenElement || document.body.classList.contains("theater-mode");
   dom.viewerFullscreenButton.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
   dom.viewerFullscreenButton.setAttribute("aria-label", expanded ? "تصغير الشاشة" : "تكبير الشاشة");
+  dom.hostFullscreenButton.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
+  dom.hostFullscreenButton.setAttribute("aria-label", expanded ? "تصغير الشاشة" : "تكبير الشاشة");
 }
 
 async function attemptRemotePlayback() {
   if (!dom.remoteVideo.srcObject && !dom.remoteAudio.srcObject) {
     return;
   }
-  try {
-    const operations = [];
-    if (dom.remoteVideo.srcObject) {
-      operations.push(dom.remoteVideo.play());
-    }
-    if (dom.remoteAudio.srcObject) {
-      operations.push(dom.remoteAudio.play());
-    }
-    await Promise.all(operations);
+
+  let videoStarted = !dom.remoteVideo.srcObject;
+  if (dom.remoteVideo.srcObject) {
+    videoStarted = await dom.remoteVideo.play().then(
+      () => true,
+      () => false
+    );
+  }
+
+  if (dom.remoteAudio.srcObject) {
+    await dom.remoteAudio.play().catch(() => {});
+  }
+
+  if (videoStarted) {
     dom.playUnlockOverlay.classList.add("hidden");
-  } catch (error) {
+  } else {
     dom.playUnlockOverlay.classList.remove("hidden");
   }
 }
