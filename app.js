@@ -61,6 +61,11 @@ const ICONS = {
       <path d="M8 8V4H6v6h6V8H8Zm8 0h-4v2h6V4h-2v4ZM8 16h4v-2H6v6h2v-4Zm8 0v4h2v-6h-6v2h4Z" />
     </svg>
   `,
+  reply: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 7V3L3 10l7 7v-4h4.2c2.6 0 4.6 1 6 3 .3.4.9.2.8-.3-.7-5.4-3.8-8.7-8.7-8.7H10Z" />
+    </svg>
+  `,
 };
 
 const dom = {
@@ -115,6 +120,10 @@ const dom = {
   chatSection: document.getElementById("chatSection"),
   membersCountBadge: document.getElementById("membersCountBadge"),
   messagesList: document.getElementById("messagesList"),
+  replyPreview: document.getElementById("replyPreview"),
+  replyPreviewName: document.getElementById("replyPreviewName"),
+  replyPreviewText: document.getElementById("replyPreviewText"),
+  cancelReplyButton: document.getElementById("cancelReplyButton"),
   chatForm: document.getElementById("chatForm"),
   chatInput: document.getElementById("chatInput"),
   micToggleButton: document.getElementById("micToggleButton"),
@@ -181,6 +190,7 @@ const state = {
   lastViewerReadyAt: 0,
   lastSyncSentAt: 0,
   lastSyncSignature: "",
+  replyDraft: null,
   uploadProgress: 0,
   screen: "home",
   hostMedia: {
@@ -219,7 +229,7 @@ async function boot() {
     return;
   }
 
-  const session = getRoomSession(state.routeRoomId);
+  const session = getRoomSession(state.routeRoomId) || recoverRouteSession(state.routeRoomId);
   if (!session) {
     switchScreen("home");
     return;
@@ -250,6 +260,7 @@ function attachEvents() {
   dom.renameForm.addEventListener("submit", handleRenameSubmit);
   dom.renameInput.addEventListener("input", syncRenameSaveVisibility);
   dom.leaveRoomButton.addEventListener("click", handleLeaveRoom);
+  dom.cancelReplyButton.addEventListener("click", cancelReply);
   dom.chatForm.addEventListener("submit", handleSendMessage);
   dom.micToggleButton.addEventListener("click", handleMicToggle);
   dom.viewerFullscreenButton.addEventListener("click", toggleViewerFullscreen);
@@ -418,6 +429,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   state.messageIds.clear();
   state.members = new Map();
   dom.messagesList.innerHTML = "";
+  cancelReply();
   dom.renameInput.value = name;
   syncRenameSaveVisibility();
 
@@ -509,7 +521,10 @@ function subscribeToRoom(roomId) {
       return;
     }
     state.messageIds.add(snapshot.key);
-    renderMessage(snapshot.val());
+    renderMessage({
+      id: snapshot.key,
+      ...snapshot.val(),
+    });
   });
 
   const signalsUnsub = onChildAdded(ref(db, `rooms/${roomId}/signals/${state.memberId}`), async (snapshot) => {
@@ -1042,13 +1057,23 @@ async function handleSendMessage(event) {
   }
 
   try {
-    await push(ref(db, `rooms/${state.roomId}/messages`), {
+    const payload = {
       senderId: state.memberId,
       senderName: state.name,
       senderAvatar: state.avatar,
       text,
       createdAt: Date.now(),
-    });
+    };
+
+    if (state.replyDraft) {
+      payload.replyTo = {
+        messageId: state.replyDraft.messageId,
+        senderName: state.replyDraft.senderName,
+        text: state.replyDraft.text,
+      };
+    }
+
+    await push(ref(db, `rooms/${state.roomId}/messages`), payload);
   } catch (error) {
     console.error(error);
     showToast(getFriendlyErrorMessage(error));
@@ -1056,12 +1081,16 @@ async function handleSendMessage(event) {
   }
 
   dom.chatInput.value = "";
+  cancelReply();
   dom.chatInput.focus();
 }
 
 function renderMessage(message) {
   const item = document.createElement("article");
   item.className = "message-item";
+  if (message.senderId === state.memberId) {
+    item.classList.add("message-own");
+  }
 
   const avatar = document.createElement("img");
   avatar.className = "message-avatar";
@@ -1074,6 +1103,9 @@ function renderMessage(message) {
   const head = document.createElement("div");
   head.className = "message-head";
 
+  const headMain = document.createElement("div");
+  headMain.className = "message-head-main";
+
   const author = document.createElement("div");
   author.className = "message-author";
   author.textContent = message.senderName || "ضيف";
@@ -1082,15 +1114,70 @@ function renderMessage(message) {
   time.className = "message-time";
   time.textContent = formatClock(message.createdAt);
 
+  headMain.append(author, time);
+
+  const replyButton = document.createElement("button");
+  replyButton.className = "message-reply-button";
+  replyButton.type = "button";
+  replyButton.setAttribute("aria-label", "رد على الرسالة");
+  replyButton.innerHTML = ICONS.reply;
+  replyButton.addEventListener("click", () => startReply(message));
+
+  head.append(headMain, replyButton);
+  card.append(head);
+
+  if (message.replyTo?.text) {
+    const quote = document.createElement("div");
+    quote.className = "message-quote";
+
+    const quoteName = document.createElement("div");
+    quoteName.className = "message-quote-name";
+    quoteName.textContent = message.replyTo.senderName || "رسالة";
+
+    const quoteText = document.createElement("div");
+    quoteText.className = "message-quote-text";
+    quoteText.textContent = message.replyTo.text || "";
+
+    quote.append(quoteName, quoteText);
+    card.append(quote);
+  }
+
   const text = document.createElement("div");
   text.className = "message-text";
   text.textContent = message.text || "";
 
-  head.append(author, time);
-  card.append(head, text);
+  card.append(text);
   item.append(avatar, card);
   dom.messagesList.append(item);
   dom.messagesList.scrollTop = dom.messagesList.scrollHeight;
+}
+
+function startReply(message) {
+  state.replyDraft = {
+    messageId: message.id || "",
+    senderName: message.senderName || "ضيف",
+    text: truncateReplyText(message.text || ""),
+  };
+  renderReplyPreview();
+  dom.chatInput.focus();
+}
+
+function cancelReply() {
+  state.replyDraft = null;
+  renderReplyPreview();
+}
+
+function renderReplyPreview() {
+  if (!state.replyDraft) {
+    dom.replyPreview.classList.add("hidden");
+    dom.replyPreviewName.textContent = "";
+    dom.replyPreviewText.textContent = "";
+    return;
+  }
+
+  dom.replyPreviewName.textContent = state.replyDraft.senderName;
+  dom.replyPreviewText.textContent = state.replyDraft.text;
+  dom.replyPreview.classList.remove("hidden");
 }
 
 function renderParticipants() {
@@ -1130,7 +1217,7 @@ function renderParticipants() {
     if (member.isHost) {
       const crown = document.createElement("span");
       crown.className = "participant-crown";
-      crown.textContent = "تاج";
+      crown.textContent = "👑";
       titleRow.append(crown);
     }
 
@@ -1195,6 +1282,7 @@ async function leaveRoom() {
   state.members = new Map();
   state.messageIds.clear();
   dom.messagesList.innerHTML = "";
+  cancelReply();
   renderParticipants();
   updateMicButton();
   navigateHome();
@@ -1982,7 +2070,7 @@ function getFriendlyErrorMessage(error) {
 }
 
 function restorePrettyRoute() {
-  const pendingRoute = sessionStorage.getItem(ROUTE_STORAGE_KEY);
+  const pendingRoute = readStorageValue(sessionStorage, ROUTE_STORAGE_KEY);
   if (!pendingRoute) {
     return;
   }
@@ -1991,7 +2079,7 @@ function restorePrettyRoute() {
   if (pendingRoute !== current) {
     history.replaceState({}, "", pendingRoute);
   }
-  sessionStorage.removeItem(ROUTE_STORAGE_KEY);
+  removeStorageValue(sessionStorage, ROUTE_STORAGE_KEY);
 }
 
 function getRoomIdFromLocation() {
@@ -2043,6 +2131,11 @@ async function generateUniqueRoomId() {
 
 function sanitizeName(value) {
   return (value || "").trim().replace(/\s+/g, " ").slice(0, 28);
+}
+
+function truncateReplyText(value) {
+  const text = (value || "").trim().replace(/\s+/g, " ");
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
 function syncRenameSaveVisibility() {
@@ -2250,28 +2343,37 @@ async function clearPersistedHostMovie(roomId) {
 }
 
 function loadPreferredName() {
-  return localStorage.getItem(NAME_STORAGE_KEY) || "";
+  return readStorageValue(localStorage, NAME_STORAGE_KEY) || readStorageValue(sessionStorage, NAME_STORAGE_KEY) || "";
 }
 
 function savePreferredName(name) {
-  localStorage.setItem(NAME_STORAGE_KEY, name);
+  writeStorageValue(localStorage, NAME_STORAGE_KEY, name);
+  writeStorageValue(sessionStorage, NAME_STORAGE_KEY, name);
 }
 
 function getStoredSessions() {
-  try {
-    const persisted = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (persisted) {
-      return JSON.parse(persisted);
-    }
+  const localSessions = parseStoredSessions(readStorageValue(localStorage, SESSION_STORAGE_KEY));
+  const tabSessions = parseStoredSessions(readStorageValue(sessionStorage, SESSION_STORAGE_KEY));
+  const sessions = {
+    ...tabSessions,
+    ...localSessions,
+  };
 
-    const legacy = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    if (legacy) {
-      localStorage.setItem(SESSION_STORAGE_KEY, legacy);
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      return JSON.parse(legacy);
-    }
+  if (Object.keys(sessions).length) {
+    const serialized = JSON.stringify(sessions);
+    writeStorageValue(localStorage, SESSION_STORAGE_KEY, serialized);
+    writeStorageValue(sessionStorage, SESSION_STORAGE_KEY, serialized);
+  }
 
+  return sessions;
+}
+
+function parseStoredSessions(value) {
+  if (!value) {
     return {};
+  }
+  try {
+    return JSON.parse(value) || {};
   } catch (error) {
     return {};
   }
@@ -2282,20 +2384,45 @@ function getRoomSession(roomId) {
   return sessions[roomId] || null;
 }
 
+function recoverRouteSession(roomId) {
+  const name = sanitizeName(state.name);
+  if (!roomId || !name) {
+    return null;
+  }
+
+  const memberId = createClientId();
+  const session = {
+    roomId,
+    memberId,
+    isHost: false,
+    name,
+    avatar: createAvatar(memberId, name),
+  };
+
+  saveRoomSession(session);
+  return session;
+}
+
 function getActiveRoomId() {
-  return localStorage.getItem(ACTIVE_ROOM_STORAGE_KEY) || "";
+  return (
+    readStorageValue(localStorage, ACTIVE_ROOM_STORAGE_KEY) ||
+    readStorageValue(sessionStorage, ACTIVE_ROOM_STORAGE_KEY) ||
+    ""
+  );
 }
 
 function setActiveRoomId(roomId) {
   if (!roomId) {
     return;
   }
-  localStorage.setItem(ACTIVE_ROOM_STORAGE_KEY, roomId);
+  writeStorageValue(localStorage, ACTIVE_ROOM_STORAGE_KEY, roomId);
+  writeStorageValue(sessionStorage, ACTIVE_ROOM_STORAGE_KEY, roomId);
 }
 
 function clearActiveRoomId(roomId = "") {
   if (!roomId || getActiveRoomId() === roomId) {
-    localStorage.removeItem(ACTIVE_ROOM_STORAGE_KEY);
+    removeStorageValue(localStorage, ACTIVE_ROOM_STORAGE_KEY);
+    removeStorageValue(sessionStorage, ACTIVE_ROOM_STORAGE_KEY);
   }
 }
 
@@ -2307,7 +2434,9 @@ function getActiveRoomSession() {
 function saveRoomSession(session) {
   const sessions = getStoredSessions();
   sessions[session.roomId] = session;
-  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
+  const serialized = JSON.stringify(sessions);
+  writeStorageValue(localStorage, SESSION_STORAGE_KEY, serialized);
+  writeStorageValue(sessionStorage, SESSION_STORAGE_KEY, serialized);
   setActiveRoomId(session.roomId);
 }
 
@@ -2318,8 +2447,34 @@ function clearRoomSession(roomId) {
   }
   const sessions = getStoredSessions();
   delete sessions[roomId];
-  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
+  const serialized = JSON.stringify(sessions);
+  writeStorageValue(localStorage, SESSION_STORAGE_KEY, serialized);
+  writeStorageValue(sessionStorage, SESSION_STORAGE_KEY, serialized);
   clearActiveRoomId(roomId);
+}
+
+function readStorageValue(storage, key) {
+  try {
+    return storage.getItem(key) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function writeStorageValue(storage, key, value) {
+  try {
+    storage.setItem(key, value);
+  } catch (error) {
+    console.warn("storage write failed", error);
+  }
+}
+
+function removeStorageValue(storage, key) {
+  try {
+    storage.removeItem(key);
+  } catch (error) {
+    console.warn("storage remove failed", error);
+  }
 }
 
 function cleanupMediaResources() {

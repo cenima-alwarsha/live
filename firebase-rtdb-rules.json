@@ -32,7 +32,7 @@
         },
         "messages": {
           "$messageId": {
-            ".validate": "newData.hasChildren(['senderId','senderName','senderAvatar','text','createdAt']) && newData.child('senderId').isString() && newData.child('senderName').isString() && newData.child('senderAvatar').isString() && newData.child('text').isString() && newData.child('text').val().length <= 320 && newData.child('createdAt').isNumber()"
+            ".validate": "newData.hasChildren(['senderId','senderName','senderAvatar','text','createdAt']) && newData.child('senderId').isString() && newData.child('senderName').isString() && newData.child('senderAvatar').isString() && newData.child('text').isString() && newData.child('text').val().length <= 320 && newData.child('createdAt').isNumber() && (!newData.hasChild('replyTo') || (newData.child('replyTo').child('messageId').isString() && newData.child('replyTo').child('senderName').isString() && newData.child('replyTo').child('text').isString() && newData.child('replyTo').child('text').val().length <= 140))"
           }
         },
         "signals": {

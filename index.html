@@ -231,10 +231,18 @@
             <section id="chatSection" class="chat-panel panel">
               <div class="chat-panel-header">
                 <h3 class="chat-title">الدردشة</h3>
-                <div id="membersCountBadge" class="members-count-badge">0</div>
+                <div id="membersCountBadge" class="members-count-badge hidden">0</div>
               </div>
 
               <div id="messagesList" class="messages-list"></div>
+
+              <div id="replyPreview" class="reply-preview hidden">
+                <div class="reply-preview-content">
+                  <div id="replyPreviewName" class="reply-preview-name"></div>
+                  <div id="replyPreviewText" class="reply-preview-text"></div>
+                </div>
+                <button id="cancelReplyButton" class="reply-cancel-button" type="button" aria-label="إلغاء الرد">×</button>
+              </div>
 
               <form id="chatForm" class="chat-form">
                 <button id="micToggleButton" class="icon-action mic-off" type="button" aria-label="تشغيل الميكروفون">

@@ -12,8 +12,10 @@
         var cleanPath = currentPath.replace(/\/+$/, "");
         var parts = cleanPath.split("/").filter(Boolean);
         var baseParts = parts.slice();
+        var roomId = "";
 
         if (parts.length && /^\d{4}$/.test(parts[parts.length - 1])) {
+          roomId = parts[parts.length - 1];
           baseParts = parts.slice(0, -1);
         } else if (parts.length > 1) {
           baseParts = parts.slice(0, -1);
@@ -29,7 +31,7 @@
           window.location.pathname + window.location.search + window.location.hash
         );
 
-        window.location.replace(basePath);
+        window.location.replace(roomId ? basePath + "?room=" + roomId : basePath);
       })();
     </script>
   </body>
