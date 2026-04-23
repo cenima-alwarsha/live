@@ -40,6 +40,29 @@ const RTC_CONFIGURATION = {
   ],
 };
 
+const ICONS = {
+  play: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 6.5v11l9-5.5-9-5.5Z" />
+    </svg>
+  `,
+  pause: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 5h3v14H7V5Zm7 0h3v14h-3V5Z" />
+    </svg>
+  `,
+  expand: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 10V4h6v2H6v4H4Zm10-6h6v6h-2V6h-4V4ZM4 20v-6h2v4h4v2H4Zm14-2v-4h2v6h-6v-2h4Z" />
+    </svg>
+  `,
+  collapse: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 8V4H6v6h6V8H8Zm8 0h-4v2h6V4h-2v4ZM8 16h4v-2H6v6h2v-4Zm8 0v4h2v-6h-6v2h4Z" />
+    </svg>
+  `,
+};
+
 const dom = {
   homeScreen: document.getElementById("homeScreen"),
   uploadScreen: document.getElementById("uploadScreen"),
@@ -69,6 +92,7 @@ const dom = {
   mediaShell: document.getElementById("mediaShell"),
   hostVideo: document.getElementById("hostVideo"),
   remoteVideo: document.getElementById("remoteVideo"),
+  remoteAudio: document.getElementById("remoteAudio"),
   hostBroadcastCanvas: document.getElementById("hostBroadcastCanvas"),
   viewerCanvas: document.getElementById("viewerCanvas"),
   waitingState: document.getElementById("waitingState"),
@@ -81,7 +105,7 @@ const dom = {
   viewerFullscreenButton: document.getElementById("viewerFullscreenButton"),
   playUnlockOverlay: document.getElementById("playUnlockOverlay"),
   unlockPlaybackButton: document.getElementById("unlockPlaybackButton"),
-  hostControlsPanel: document.getElementById("hostControlsPanel"),
+  hostControlsOverlay: document.getElementById("hostControlsOverlay"),
   hostMovieName: document.getElementById("hostMovieName"),
   hostTimeLabel: document.getElementById("hostTimeLabel"),
   hostPlayPauseButton: document.getElementById("hostPlayPauseButton"),
@@ -101,6 +125,7 @@ const dom = {
   drawerRoleLabel: document.getElementById("drawerRoleLabel"),
   renameForm: document.getElementById("renameForm"),
   renameInput: document.getElementById("renameInput"),
+  renameSaveButton: document.getElementById("renameSaveButton"),
   leaveRoomButton: document.getElementById("leaveRoomButton"),
   participantsList: document.getElementById("participantsList"),
   confirmModal: document.getElementById("confirmModal"),
@@ -136,6 +161,7 @@ const state = {
   viewerRemoteStream: null,
   viewerLoopFrame: null,
   viewerControlsTimer: null,
+  hostControlsTimer: null,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -186,6 +212,7 @@ async function boot() {
   updateHomeMode();
   updateMicButton();
   syncViewerExpandState();
+  syncRenameSaveVisibility();
 
   if (!state.routeRoomId) {
     switchScreen("home");
@@ -221,15 +248,25 @@ function attachEvents() {
   dom.profileButton.addEventListener("click", openDrawer);
   dom.closeDrawerButton.addEventListener("click", closeDrawer);
   dom.renameForm.addEventListener("submit", handleRenameSubmit);
+  dom.renameInput.addEventListener("input", syncRenameSaveVisibility);
   dom.leaveRoomButton.addEventListener("click", handleLeaveRoom);
   dom.chatForm.addEventListener("submit", handleSendMessage);
   dom.micToggleButton.addEventListener("click", handleMicToggle);
   dom.viewerFullscreenButton.addEventListener("click", toggleViewerFullscreen);
   dom.focusChatButton.addEventListener("click", focusChatComposer);
   dom.unlockPlaybackButton.addEventListener("click", attemptRemotePlayback);
-  dom.replaceMovieButton.addEventListener("click", () => dom.movieFileInput.click());
-  dom.hostPlayPauseButton.addEventListener("click", toggleHostPlayback);
-  dom.hostSeekBar.addEventListener("input", handleHostSeek);
+  dom.replaceMovieButton.addEventListener("click", () => {
+    revealHostControls();
+    dom.movieFileInput.click();
+  });
+  dom.hostPlayPauseButton.addEventListener("click", async () => {
+    revealHostControls();
+    await toggleHostPlayback();
+  });
+  dom.hostSeekBar.addEventListener("input", () => {
+    revealHostControls();
+    handleHostSeek();
+  });
   document.addEventListener("fullscreenchange", syncViewerExpandState);
 
   dom.hostVideo.addEventListener("loadedmetadata", () => {
@@ -265,10 +302,11 @@ function attachEvents() {
   });
 
   dom.mediaShell.addEventListener("click", (event) => {
-    if (state.isHost) {
+    if (event.target.closest("button") || event.target.closest("input")) {
       return;
     }
-    if (event.target.closest("button") || event.target.closest("input")) {
+    if (state.isHost) {
+      toggleHostControls();
       return;
     }
     toggleViewerControls();
@@ -381,6 +419,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   state.members = new Map();
   dom.messagesList.innerHTML = "";
   dom.renameInput.value = name;
+  syncRenameSaveVisibility();
 
   cleanupRoomSubscriptions();
   closeAllPeers();
@@ -539,6 +578,8 @@ function switchScreen(name) {
       document.exitFullscreen().catch(() => {});
     }
     setTheaterMode(false);
+    dom.viewerControls.classList.add("hidden");
+    hideHostControls();
     dom.hostMenuPanel.classList.add("hidden");
     closeDrawer();
   }
@@ -550,12 +591,13 @@ function updateProfileUi() {
   dom.drawerAvatar.src = state.avatar;
   dom.drawerNameLabel.textContent = state.name || "ضيف";
   dom.drawerRoleLabel.textContent = "";
+  dom.renameInput.value = state.name || "";
+  syncRenameSaveVisibility();
 }
 
 function updateModeUi() {
-  const showHostControls = state.isHost && state.localPrepared;
+  const showHostControls = state.isHost && state.localPrepared && state.screen === "room";
   dom.hostMenuWrap.classList.toggle("hidden", !state.isHost || state.screen !== "room");
-  dom.hostControlsPanel.classList.toggle("hidden", !showHostControls);
   dom.hostVideo.classList.toggle("hidden", !showHostControls);
   dom.viewerCanvas.classList.toggle("hidden", state.isHost);
   dom.remoteVideo.classList.toggle("hidden", state.isHost);
@@ -564,6 +606,9 @@ function updateModeUi() {
     !(state.isHost && state.screen === "room" && !state.localPrepared)
   );
   dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || !state.viewerRemoteStream);
+  if (!showHostControls) {
+    hideHostControls();
+  }
   if (state.isHost) {
     setTheaterMode(false);
   }
@@ -633,6 +678,7 @@ async function prepareHostMovie(file) {
   switchScreen("room");
   updateHostPlaybackUi();
   updateWaitingOverlay();
+  revealHostControls();
   await flushPendingViewers();
   showToast("تم تجهيز الفيلم بنجاح.");
 }
@@ -742,6 +788,7 @@ function resetHostMovieState() {
     duration: 0,
   };
 
+  hideHostControls();
   dom.hostVideo.pause();
   dom.hostVideo.removeAttribute("src");
   dom.hostVideo.load();
@@ -876,7 +923,8 @@ function updateHostPlaybackUi() {
   dom.hostMovieName.textContent = state.hostMedia.name || "الفيلم";
   dom.hostTimeLabel.textContent = `${formatDuration(currentTime)} / ${formatDuration(duration)}`;
   dom.hostSeekBar.value = duration ? `${(currentTime / duration) * 100}` : "0";
-  dom.hostPlayPauseButton.textContent = dom.hostVideo.paused ? "تشغيل" : "إيقاف";
+  dom.hostPlayPauseButton.innerHTML = dom.hostVideo.paused ? ICONS.play : ICONS.pause;
+  dom.hostPlayPauseButton.setAttribute("aria-label", dom.hostVideo.paused ? "تشغيل" : "إيقاف");
 }
 
 function handleHostSeek() {
@@ -1102,6 +1150,7 @@ function renderParticipants() {
 }
 
 function openDrawer() {
+  syncRenameSaveVisibility();
   dom.profileDrawer.classList.remove("hidden");
 }
 
@@ -1161,6 +1210,7 @@ async function handleRenameSubmit(event) {
   }
 
   state.name = nextName;
+  dom.renameInput.value = nextName;
   savePreferredName(nextName);
   saveRoomSession({
     roomId: state.roomId,
@@ -1177,6 +1227,7 @@ async function handleRenameSubmit(event) {
     update(ref(db, `rooms/${state.roomId}`), { creatorName: nextName }).catch(() => {});
   }
 
+  syncRenameSaveVisibility();
   showToast("تم تحديث الاسم.");
 }
 
@@ -1516,6 +1567,8 @@ function handleIncomingHostTrack(event) {
   }
 
   dom.remoteVideo.srcObject = state.viewerRemoteStream;
+  dom.remoteVideo.muted = true;
+  dom.remoteAudio.srcObject = state.viewerRemoteStream;
   attemptRemotePlayback();
   startViewerCanvasLoop();
   updateWaitingOverlay();
@@ -1699,6 +1752,8 @@ function cleanupPeer(peerId) {
     state.viewerRemoteStream = null;
     dom.remoteVideo.pause();
     dom.remoteVideo.srcObject = null;
+    dom.remoteAudio.pause();
+    dom.remoteAudio.srcObject = null;
     stopViewerCanvasLoop();
   }
 
@@ -1776,12 +1831,43 @@ function revealViewerControls() {
   }, 3200);
 }
 
+function hideHostControls() {
+  dom.hostControlsOverlay.classList.add("hidden");
+  clearTimeout(state.hostControlsTimer);
+}
+
+function toggleHostControls() {
+  if (!state.isHost || !state.localPrepared || state.screen !== "room") {
+    return;
+  }
+  const visible = !dom.hostControlsOverlay.classList.contains("hidden");
+  if (visible) {
+    hideHostControls();
+    return;
+  }
+  revealHostControls();
+}
+
+function revealHostControls() {
+  if (!state.isHost || !state.localPrepared || state.screen !== "room") {
+    return;
+  }
+  dom.hostControlsOverlay.classList.remove("hidden");
+  clearTimeout(state.hostControlsTimer);
+  state.hostControlsTimer = window.setTimeout(() => {
+    dom.hostControlsOverlay.classList.add("hidden");
+  }, 3200);
+}
+
 function focusChatComposer() {
+  const hadExpandedPlayer = !!document.fullscreenElement || document.body.classList.contains("theater-mode");
   if (document.fullscreenElement) {
     document.exitFullscreen().catch(() => {});
   }
   setTheaterMode(false);
-  dom.chatSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (hadExpandedPlayer) {
+    dom.chatSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   dom.chatInput.focus();
   revealViewerControls();
 }
@@ -1821,15 +1907,23 @@ function setTheaterMode(enabled) {
 
 function syncViewerExpandState() {
   const expanded = !!document.fullscreenElement || document.body.classList.contains("theater-mode");
-  dom.viewerFullscreenButton.textContent = expanded ? "تصغير" : "تكبير";
+  dom.viewerFullscreenButton.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
+  dom.viewerFullscreenButton.setAttribute("aria-label", expanded ? "تصغير الشاشة" : "تكبير الشاشة");
 }
 
 async function attemptRemotePlayback() {
-  if (!dom.remoteVideo.srcObject) {
+  if (!dom.remoteVideo.srcObject && !dom.remoteAudio.srcObject) {
     return;
   }
   try {
-    await dom.remoteVideo.play();
+    const operations = [];
+    if (dom.remoteVideo.srcObject) {
+      operations.push(dom.remoteVideo.play());
+    }
+    if (dom.remoteAudio.srcObject) {
+      operations.push(dom.remoteAudio.play());
+    }
+    await Promise.all(operations);
     dom.playUnlockOverlay.classList.add("hidden");
   } catch (error) {
     dom.playUnlockOverlay.classList.remove("hidden");
@@ -1931,6 +2025,7 @@ function navigateHome() {
   history.replaceState({}, "", getBasePath());
   state.routeRoomId = null;
   dom.displayNameInput.value = state.name;
+  hideHostControls();
   updateHomeMode();
   switchScreen("home");
 }
@@ -1948,6 +2043,11 @@ async function generateUniqueRoomId() {
 
 function sanitizeName(value) {
   return (value || "").trim().replace(/\s+/g, " ").slice(0, 28);
+}
+
+function syncRenameSaveVisibility() {
+  const nextName = sanitizeName(dom.renameInput?.value || "");
+  dom.renameSaveButton.classList.toggle("hidden", !nextName || nextName === state.name);
 }
 
 function createClientId() {
@@ -2228,6 +2328,10 @@ function cleanupMediaResources() {
   stopHostVideoRenderLoop();
   disconnectMovieSource();
   closeAllPeers();
+  clearTimeout(state.viewerControlsTimer);
+  clearTimeout(state.hostControlsTimer);
+  dom.remoteAudio.pause();
+  dom.remoteAudio.srcObject = null;
   state.viewerMicTrack?.stop();
   state.hostMicTrack?.stop();
   if (state.hostCaptureStream) {

@@ -137,6 +137,8 @@
                   autoplay
                 ></video>
 
+                <audio id="remoteAudio" class="remote-audio" autoplay playsinline></audio>
+
                 <canvas id="hostBroadcastCanvas" class="broadcast-canvas"></canvas>
                 <canvas id="viewerCanvas" class="viewer-canvas"></canvas>
 
@@ -152,11 +154,66 @@
                     <span id="viewerRemainingTime">- 00:00</span>
                   </div>
                   <div class="viewer-actions">
-                    <button id="focusChatButton" class="secondary-button" type="button">الدردشة</button>
-                    <button id="viewerFullscreenButton" class="secondary-button" type="button">
-                      تكبير الشاشة
+                    <button
+                      id="focusChatButton"
+                      class="viewer-icon-button"
+                      type="button"
+                      aria-label="الدردشة"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M7 18.5c-.9 0-1.6-.3-2.2-.9-.6-.6-.8-1.3-.8-2.1V7.7c0-.9.3-1.6.9-2.2.6-.6 1.3-.9 2.1-.9h10c.9 0 1.6.3 2.2.9.6.6.9 1.3.9 2.2v7.8c0 .8-.3 1.5-.9 2.1-.6.6-1.3.9-2.2.9H9.6l-3.3 2.9c-.2.1-.4.2-.6.1-.3 0-.4-.3-.4-.6v-2.4H7Z"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      id="viewerFullscreenButton"
+                      class="viewer-icon-button"
+                      type="button"
+                      aria-label="تكبير الشاشة"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M4 10V4h6v2H6v4H4Zm10-6h6v6h-2V6h-4V4ZM4 20v-6h2v4h4v2H4Zm14-2v-4h2v6h-6v-2h4Z"
+                        />
+                      </svg>
                     </button>
                   </div>
+                </div>
+
+                <div id="hostControlsOverlay" class="host-controls hidden">
+                  <div class="host-controls-top">
+                    <div class="host-meta">
+                      <div id="hostMovieName" class="host-movie-name">الفيلم</div>
+                      <div id="hostTimeLabel" class="host-time-label">00:00 / 00:00</div>
+                    </div>
+                    <div class="host-button-row">
+                      <button
+                        id="replaceMovieButton"
+                        class="overlay-icon-button"
+                        type="button"
+                        aria-label="تغيير الفيلم"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l1.5 1.7c.2.2.4.3.7.3h5.3A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Zm4.8 7.6L11 13l2.2 2.1 3.3-3.1 1.5 1.6-4.8 4.5-2.2-2.1-2.2 2.1-1.5-1.6 1.5-1.4Z"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        id="hostPlayPauseButton"
+                        class="overlay-icon-button overlay-icon-button-primary"
+                        type="button"
+                        aria-label="تشغيل"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M8 6.5v11l9-5.5-9-5.5Z" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <input id="hostSeekBar" class="seek-bar" type="range" min="0" max="100" value="0" />
                 </div>
 
                 <div id="playUnlockOverlay" class="play-unlock-overlay hidden">
@@ -164,25 +221,6 @@
                     اضغط لبدء البث
                   </button>
                 </div>
-              </div>
-
-              <div id="hostControlsPanel" class="host-controls hidden">
-                <div class="host-controls-top">
-                  <div>
-                    <div id="hostMovieName" class="host-movie-name">لم يتم اختيار فيلم بعد</div>
-                    <div id="hostTimeLabel" class="host-time-label">00:00 / 00:00</div>
-                  </div>
-                  <div class="host-button-row">
-                    <button id="hostPlayPauseButton" class="primary-button slim" type="button">
-                      تشغيل
-                    </button>
-                    <button id="replaceMovieButton" class="secondary-button slim" type="button">
-                      تغيير الفيلم
-                    </button>
-                  </div>
-                </div>
-
-                <input id="hostSeekBar" class="seek-bar" type="range" min="0" max="100" value="0" />
               </div>
 
               <div id="hostReloadNotice" class="host-reload-notice hidden">
@@ -199,6 +237,9 @@
               <div id="messagesList" class="messages-list"></div>
 
               <form id="chatForm" class="chat-form">
+                <button id="micToggleButton" class="icon-action mic-off" type="button" aria-label="تشغيل الميكروفون">
+                  <span class="mic-icon">🎤</span>
+                </button>
                 <input
                   id="chatInput"
                   class="chat-input"
@@ -207,10 +248,11 @@
                   placeholder="اكتب رسالتك هنا..."
                   autocomplete="off"
                 />
-                <button id="micToggleButton" class="icon-action mic-off" type="button" aria-label="تشغيل الميكروفون">
-                  <span class="mic-icon">🎤</span>
+                <button class="primary-button send-button" type="submit" aria-label="إرسال الرسالة">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3.4 11.2 19.7 4c.8-.3 1.6.4 1.3 1.3l-7.2 16.3c-.3.8-1.4.9-1.8.2l-2.4-5.2-5.2-2.4c-.7-.4-.6-1.5.2-1.8Z" />
+                  </svg>
                 </button>
-                <button class="primary-button send-button" type="submit">إرسال</button>
               </form>
             </section>
           </div>
@@ -232,7 +274,7 @@
         <form id="renameForm" class="rename-form">
           <label class="field-label sr-only" for="renameInput">الاسم</label>
           <input id="renameInput" class="text-input" type="text" maxlength="28" placeholder="الاسم" aria-label="الاسم" />
-          <button class="secondary-button full-width" type="submit">حفظ</button>
+          <button id="renameSaveButton" class="secondary-button full-width hidden" type="submit">حفظ</button>
         </form>
 
         <button id="leaveRoomButton" class="danger-button full-width" type="button">خروج</button>
