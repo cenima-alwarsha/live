@@ -770,11 +770,8 @@ async function resumeRestoredHostPlayback() {
   }
 
   if (state.roomData?.sync?.isPlaying) {
-    const wasMuted = dom.hostVideo.muted;
-    dom.hostVideo.muted = true;
-    await ensureHostAudioContext().catch(() => {});
+    await prepareHostMovieAudio();
     await dom.hostVideo.play().catch(() => {});
-    dom.hostVideo.muted = wasMuted;
   } else {
     dom.hostVideo.pause();
   }
@@ -823,10 +820,12 @@ async function primeHostVideo() {
   await ensureHostAudioContext();
   connectMovieAudioSource();
   dom.hostVideo.muted = true;
+  dom.hostVideo.volume = 1;
   await dom.hostVideo.play().catch(() => {});
   await wait(140);
   dom.hostVideo.pause();
   dom.hostVideo.currentTime = 0;
+  dom.hostVideo.muted = false;
   resizeHostBroadcastCanvas();
   startHostVideoRenderLoop();
 
@@ -864,6 +863,17 @@ function connectMovieAudioSource() {
   state.movieSourceNode.connect(state.hostAudioContext.destination);
   state.movieMonitorConnected = true;
   state.viewerMixes.forEach((mix) => attachMovieSourceToMix(mix));
+}
+
+async function prepareHostMovieAudio() {
+  if (!state.isHost || !state.localPrepared) {
+    return;
+  }
+
+  await ensureHostAudioContext();
+  connectMovieAudioSource();
+  dom.hostVideo.muted = false;
+  dom.hostVideo.volume = 1;
 }
 
 function resizeHostBroadcastCanvas() {
@@ -964,6 +974,7 @@ async function toggleHostPlayback() {
   }
 
   if (dom.hostVideo.paused) {
+    await prepareHostMovieAudio();
     await dom.hostVideo.play().catch(() => {
       showToast("اضغط على الفيديو أو أعد المحاولة لتشغيل الفيلم.");
     });

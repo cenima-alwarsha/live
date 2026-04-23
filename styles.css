@@ -813,6 +813,7 @@ button {
   padding-inline-end: 4px;
   display: flex;
   flex-direction: column;
+  direction: ltr;
   gap: 10px;
 }
 
@@ -837,12 +838,12 @@ button {
 }
 
 .message-item:not(.message-own) {
-  margin-left: auto;
+  align-self: flex-end;
   direction: rtl;
 }
 
 .message-item.message-own {
-  margin-right: auto;
+  align-self: flex-start;
   direction: ltr;
 }
 
