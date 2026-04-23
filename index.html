@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="سينما الورشة: غرف مشاهدة مباشرة بتصميم فاخر، شات حي، ومزامنة كاملة للفيلم داخل المتصفح."
+    />
+    <title>سينما الورشة</title>
+    <link rel="icon" href="./Logo.jpeg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Changa:wght@500;700;800&family=Tajawal:wght@400;500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="site-shell">
+      <div class="site-glow glow-a"></div>
+      <div class="site-glow glow-b"></div>
+      <div class="site-grid"></div>
+
+      <main class="app-frame">
+        <section id="homeScreen" class="screen active">
+          <div class="hero-layout">
+            <div class="brand-card panel">
+              <img src="./Logo.jpeg" alt="شعار سينما الورشة" class="hero-logo" />
+              <h1 class="hero-title">سينما الورشة</h1>
+            </div>
+
+            <div class="entry-card panel">
+              <h2 id="homeHeading" class="entry-title">اكتب اسمك</h2>
+              <p id="homeSubtitle" class="sr-only"></p>
+              <div id="roomCodeHint" class="room-code-hint hidden" aria-hidden="true"></div>
+
+              <form id="identityForm" class="identity-form">
+                <label class="field-label sr-only" for="displayNameInput">اسمك داخل الغرفة</label>
+                <input
+                  id="displayNameInput"
+                  class="text-input"
+                  type="text"
+                  maxlength="28"
+                  placeholder="اسمك"
+                  autocomplete="nickname"
+                  aria-label="اسمك"
+                />
+
+                <button id="identitySubmitButton" class="primary-button" type="submit">
+                  إنشاء غرفة السينما
+                </button>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section id="uploadScreen" class="screen">
+          <div class="upload-layout panel">
+            <div class="upload-header">
+              <h2 class="section-title">تحميل الفيلم</h2>
+            </div>
+
+            <label class="upload-dropzone" for="movieFileInput">
+              <input id="movieFileInput" type="file" accept="video/*,.mkv,.mp4,.mov,.webm" hidden />
+              <span class="upload-icon">+</span>
+              <span class="upload-title">تحميل الفيلم</span>
+            </label>
+
+            <div id="uploadStatusCard" class="upload-status hidden">
+              <div class="upload-meta">
+                <div>
+                  <div id="uploadFileName" class="upload-file-name">جارٍ التحضير...</div>
+                  <div id="uploadProgressLabel" class="upload-progress-label">0%</div>
+                </div>
+                <div id="uploadSpeedLabel" class="upload-speed-label">جاري الفحص</div>
+              </div>
+              <div class="progress-track">
+                <div id="uploadProgressBar" class="progress-fill"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="roomScreen" class="screen">
+          <div class="room-layout">
+            <header class="topbar panel">
+              <div class="topbar-side topbar-side-start">
+                <div id="livePill" class="live-pill">
+                  <span>LIVE</span>
+                  <strong id="roomCodeBadge">0000</strong>
+                </div>
+              </div>
+
+              <div class="topbar-center">
+                <img src="./Logo.jpeg" alt="شعار سينما الورشة" class="topbar-logo" />
+              </div>
+
+              <div class="topbar-side topbar-side-end">
+                <div id="hostMenuWrap" class="host-menu-wrap hidden">
+                  <button id="hostMenuButton" class="icon-button" type="button" aria-label="خيارات الغرفة">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </button>
+                  <div id="hostMenuPanel" class="floating-menu hidden">
+                    <button id="copyRoomLinkButton" class="menu-action" type="button">
+                      نسخ رابط الغرفة
+                    </button>
+                  </div>
+                </div>
+
+                <button id="profileButton" class="profile-chip" type="button">
+                  <img id="profileAvatarSmall" class="profile-chip-avatar" alt="" />
+                  <span id="profileNameSmall" class="profile-chip-name">ضيف</span>
+                </button>
+              </div>
+            </header>
+
+            <section class="stage-panel panel">
+              <div id="mediaShell" class="media-shell">
+                <video
+                  id="hostVideo"
+                  class="host-video hidden"
+                  playsinline
+                  preload="auto"
+                  controlslist="nodownload noplaybackrate noremoteplayback nofullscreen"
+                  disablepictureinpicture
+                ></video>
+
+                <video
+                  id="remoteVideo"
+                  class="remote-video"
+                  playsinline
+                  preload="auto"
+                  autoplay
+                ></video>
+
+                <canvas id="hostBroadcastCanvas" class="broadcast-canvas"></canvas>
+                <canvas id="viewerCanvas" class="viewer-canvas"></canvas>
+
+                <div id="waitingState" class="waiting-state">
+                  <h3 id="waitingTitle">بانتظار الفيلم</h3>
+                  <p id="waitingText" class="sr-only"></p>
+                </div>
+
+                <div id="viewerControls" class="viewer-controls hidden">
+                  <div class="viewer-time-group">
+                    <span id="viewerCurrentTime">00:00</span>
+                    <span class="time-divider">/</span>
+                    <span id="viewerRemainingTime">- 00:00</span>
+                  </div>
+                  <div class="viewer-actions">
+                    <button id="focusChatButton" class="secondary-button" type="button">الدردشة</button>
+                    <button id="viewerFullscreenButton" class="secondary-button" type="button">
+                      تكبير الشاشة
+                    </button>
+                  </div>
+                </div>
+
+                <div id="playUnlockOverlay" class="play-unlock-overlay hidden">
+                  <button id="unlockPlaybackButton" class="primary-button" type="button">
+                    اضغط لبدء البث
+                  </button>
+                </div>
+              </div>
+
+              <div id="hostControlsPanel" class="host-controls hidden">
+                <div class="host-controls-top">
+                  <div>
+                    <div id="hostMovieName" class="host-movie-name">لم يتم اختيار فيلم بعد</div>
+                    <div id="hostTimeLabel" class="host-time-label">00:00 / 00:00</div>
+                  </div>
+                  <div class="host-button-row">
+                    <button id="hostPlayPauseButton" class="primary-button slim" type="button">
+                      تشغيل
+                    </button>
+                    <button id="replaceMovieButton" class="secondary-button slim" type="button">
+                      تغيير الفيلم
+                    </button>
+                  </div>
+                </div>
+
+                <input id="hostSeekBar" class="seek-bar" type="range" min="0" max="100" value="0" />
+              </div>
+
+              <div id="hostReloadNotice" class="host-reload-notice hidden">
+                أعد تحميل الفيلم
+              </div>
+            </section>
+
+            <section id="chatSection" class="chat-panel panel">
+              <div class="chat-panel-header">
+                <h3 class="chat-title">الدردشة</h3>
+                <div id="membersCountBadge" class="members-count-badge">0</div>
+              </div>
+
+              <div id="messagesList" class="messages-list"></div>
+
+              <form id="chatForm" class="chat-form">
+                <input
+                  id="chatInput"
+                  class="chat-input"
+                  type="text"
+                  maxlength="320"
+                  placeholder="اكتب رسالتك هنا..."
+                  autocomplete="off"
+                />
+                <button id="micToggleButton" class="icon-action mic-off" type="button" aria-label="تشغيل الميكروفون">
+                  <span class="mic-icon">🎤</span>
+                </button>
+                <button class="primary-button send-button" type="submit">إرسال</button>
+              </form>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <aside id="profileDrawer" class="drawer hidden">
+      <div class="drawer-card panel">
+        <button id="closeDrawerButton" class="drawer-close" type="button" aria-label="إغلاق">×</button>
+        <div class="drawer-profile">
+          <img id="drawerAvatar" class="drawer-avatar" alt="" />
+          <div>
+            <div id="drawerNameLabel" class="drawer-name">ضيف</div>
+            <div id="drawerRoleLabel" class="drawer-role sr-only"></div>
+          </div>
+        </div>
+
+        <form id="renameForm" class="rename-form">
+          <label class="field-label sr-only" for="renameInput">الاسم</label>
+          <input id="renameInput" class="text-input" type="text" maxlength="28" placeholder="الاسم" aria-label="الاسم" />
+          <button class="secondary-button full-width" type="submit">حفظ</button>
+        </form>
+
+        <button id="leaveRoomButton" class="danger-button full-width" type="button">خروج</button>
+
+        <div class="participants-block">
+          <div class="participants-title">المتصلون</div>
+          <div id="participantsList" class="participants-list"></div>
+        </div>
+      </div>
+    </aside>
+
+    <div id="confirmModal" class="modal hidden">
+      <div class="modal-card panel">
+        <h3 id="confirmTitle" class="modal-title">تأكيد</h3>
+        <p id="confirmMessage" class="modal-message"></p>
+        <div class="modal-actions">
+          <button id="confirmCancelButton" class="secondary-button" type="button">إلغاء</button>
+          <button id="confirmApproveButton" class="primary-button" type="button">موافق</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "rooms": {
+      "$roomId": {
+        ".read": "$roomId.matches(/^[0-9]{4}$/)",
+        ".write": "$roomId.matches(/^[0-9]{4}$/)",
+        ".validate": "$roomId.matches(/^[0-9]{4}$/)",
+        "creatorId": {
+          ".validate": "newData.isString()"
+        },
+        "creatorName": {
+          ".validate": "newData.isString() && newData.val().length <= 28"
+        },
+        "status": {
+          ".validate": "newData.isString()"
+        },
+        "createdAt": {
+          ".validate": "newData.isNumber()"
+        },
+        "film": {
+          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber())"
+        },
+        "sync": {
+          ".validate": "newData.child('currentTime').isNumber() && newData.child('duration').isNumber() && newData.child('isPlaying').isBoolean() && newData.child('updatedAt').isNumber()"
+        },
+        "members": {
+          "$memberId": {
+            ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('name').val().length <= 28 && newData.child('avatar').isString() && newData.child('isHost').isBoolean() && newData.child('micEnabled').isBoolean() && newData.child('joinedAt').isNumber() && newData.child('updatedAt').isNumber())"
+          }
+        },
+        "messages": {
+          "$messageId": {
+            ".validate": "newData.hasChildren(['senderId','senderName','senderAvatar','text','createdAt']) && newData.child('senderId').isString() && newData.child('senderName').isString() && newData.child('senderAvatar').isString() && newData.child('text').isString() && newData.child('text').val().length <= 320 && newData.child('createdAt').isNumber()"
+          }
+        },
+        "signals": {
+          "$targetId": {
+            "$signalId": {
+              ".validate": "newData.hasChildren(['type','from','sentAt']) && newData.child('type').isString() && newData.child('from').isString() && newData.child('sentAt').isNumber()"
+            }
+          }
+        }
+      }
+    }
+  }
+}
