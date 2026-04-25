@@ -85,6 +85,9 @@ const dom = {
   uploadSpeedLabel: document.getElementById("uploadSpeedLabel"),
   uploadProgressBar: document.getElementById("uploadProgressBar"),
   uploadHint: document.getElementById("uploadHint"),
+  youtubeForm: document.getElementById("youtubeForm"),
+  youtubeUrlInput: document.getElementById("youtubeUrlInput"),
+  youtubeSubmitButton: document.getElementById("youtubeSubmitButton"),
   roomCodeBadge: document.getElementById("roomCodeBadge"),
   livePill: document.getElementById("livePill"),
   hostMenuWrap: document.getElementById("hostMenuWrap"),
@@ -94,12 +97,17 @@ const dom = {
   profileButton: document.getElementById("profileButton"),
   profileAvatarSmall: document.getElementById("profileAvatarSmall"),
   profileNameSmall: document.getElementById("profileNameSmall"),
+  viewerCountPill: document.getElementById("viewerCountPill"),
+  viewerCountValue: document.getElementById("viewerCountValue"),
   mediaShell: document.getElementById("mediaShell"),
   hostVideo: document.getElementById("hostVideo"),
   remoteVideo: document.getElementById("remoteVideo"),
   remoteAudio: document.getElementById("remoteAudio"),
   hostBroadcastCanvas: document.getElementById("hostBroadcastCanvas"),
   viewerCanvas: document.getElementById("viewerCanvas"),
+  youtubeShell: document.getElementById("youtubeShell"),
+  youtubePlayerMount: document.getElementById("youtubePlayerMount"),
+  youtubeInteractionBlocker: document.getElementById("youtubeInteractionBlocker"),
   waitingState: document.getElementById("waitingState"),
   waitingTitle: document.getElementById("waitingTitle"),
   waitingText: document.getElementById("waitingText"),
@@ -155,6 +163,7 @@ const state = {
   roomId: null,
   roomData: null,
   members: new Map(),
+  knownMemberIds: new Set(),
   messageIds: new Set(),
   listeners: [],
   pendingViewers: new Set(),
@@ -167,6 +176,7 @@ const state = {
   isHost: false,
   micEnabled: false,
   joinedAt: 0,
+  presenceReady: false,
   localPrepared: false,
   viewerRemoteStream: null,
   viewerLoopFrame: null,
@@ -181,6 +191,14 @@ const state = {
   hostCaptureStream: null,
   hostVideoTrack: null,
   hostVideoRenderLoop: null,
+  wakeLock: null,
+  youtubeApiPromise: null,
+  youtubePlayer: null,
+  youtubePlayerReadyPromise: null,
+  youtubePlayerReadyResolver: null,
+  youtubeVideoId: "",
+  youtubeSyncTimer: null,
+  youtubeApplyingSync: false,
   movieSourceNode: null,
   movieMonitorConnected: false,
   hostMicTrack: null,
@@ -191,15 +209,19 @@ const state = {
   lastViewerReadyAt: 0,
   lastSyncSentAt: 0,
   lastSyncSignature: "",
+  lastVisibilityToastAt: 0,
   replyDraft: null,
   uploadProgress: 0,
   screen: "home",
   hostMedia: {
+    source: "",
     file: null,
     fileUrl: "",
     name: "",
     size: 0,
     duration: 0,
+    youtubeId: "",
+    youtubeUrl: "",
   },
 };
 
@@ -254,6 +276,7 @@ async function boot() {
 function attachEvents() {
   dom.identityForm.addEventListener("submit", handleIdentitySubmit);
   dom.movieFileInput.addEventListener("change", handleMovieFileChange);
+  dom.youtubeForm.addEventListener("submit", handleYoutubeSubmit);
   dom.hostMenuButton.addEventListener("click", toggleHostMenu);
   dom.copyRoomLinkButton.addEventListener("click", copyRoomLink);
   dom.profileButton.addEventListener("click", openDrawer);
@@ -284,6 +307,7 @@ function attachEvents() {
     handleHostSeek();
   });
   document.addEventListener("fullscreenchange", syncViewerExpandState);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 
   dom.hostVideo.addEventListener("loadedmetadata", () => {
     updateHostPlaybackUi();
@@ -300,14 +324,17 @@ function attachEvents() {
   dom.hostVideo.addEventListener("play", () => {
     updateHostPlaybackUi();
     syncHostPlayback(true);
+    requestHostWakeLock();
   });
   dom.hostVideo.addEventListener("pause", () => {
     updateHostPlaybackUi();
     syncHostPlayback(true);
+    releaseHostWakeLock();
   });
   dom.hostVideo.addEventListener("ended", () => {
     updateHostPlaybackUi();
     syncHostPlayback(true);
+    releaseHostWakeLock();
   });
 
   dom.remoteVideo.addEventListener("loadedmetadata", () => {
@@ -336,7 +363,12 @@ function attachEvents() {
     if (!event.target.closest("#hostMenuWrap")) {
       dom.hostMenuPanel.classList.add("hidden");
     }
+    if (!event.target.closest("#profileDrawer") && !event.target.closest("#profileButton")) {
+      closeDrawer();
+    }
   });
+
+  window.addEventListener("resize", positionProfileDrawer);
 
   window.addEventListener("beforeunload", cleanupMediaResources);
 }
@@ -434,6 +466,8 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   state.joinedAt = Date.now();
   state.messageIds.clear();
   state.members = new Map();
+  state.knownMemberIds.clear();
+  state.presenceReady = false;
   dom.messagesList.innerHTML = "";
   cancelReply();
   dom.renameInput.value = name;
@@ -444,6 +478,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   cleanupViewerReconnect();
 
   updateProfileUi();
+  updateViewerCount();
   updateRoomBadge();
   updateModeUi();
 
@@ -451,7 +486,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   subscribeToRoom(roomId);
 
   if (state.isHost) {
-    if (state.hostMedia.fileUrl) {
+    if (state.hostMedia.fileUrl || roomData?.film?.source === "youtube") {
       switchScreen("room");
     } else {
       switchScreen("upload");
@@ -499,6 +534,7 @@ function subscribeToRoom(roomId) {
     updateModeUi();
     updateWaitingOverlay();
     renderViewerTime(state.roomData.sync);
+    handleRoomMediaUpdate().catch((error) => console.error("media update error", error));
 
     if (!state.isHost && state.roomData?.creatorId) {
       scheduleViewerReconnect(200);
@@ -513,8 +549,10 @@ function subscribeToRoom(roomId) {
         ...child.val(),
       });
     });
+    renderPresenceEvents(nextMembers);
     state.members = nextMembers;
     renderParticipants();
+    updateViewerCount();
     updateWaitingOverlay();
     if (!state.isHost) {
       scheduleViewerReconnect(400);
@@ -618,10 +656,12 @@ function updateProfileUi() {
 
 function updateModeUi() {
   const showHostControls = state.isHost && state.localPrepared && state.screen === "room";
+  const youtubeMode = isYoutubeMode();
   dom.hostMenuWrap.classList.toggle("hidden", !state.isHost || state.screen !== "room");
-  dom.hostVideo.classList.toggle("hidden", !showHostControls);
-  dom.viewerCanvas.classList.toggle("hidden", state.isHost);
-  dom.remoteVideo.classList.toggle("hidden", state.isHost);
+  dom.hostVideo.classList.toggle("hidden", !showHostControls || youtubeMode);
+  dom.viewerCanvas.classList.toggle("hidden", state.isHost || youtubeMode);
+  dom.remoteVideo.classList.toggle("hidden", state.isHost || youtubeMode);
+  dom.youtubeShell.classList.toggle("hidden", !youtubeMode || state.screen !== "room");
   dom.hostReloadNotice.classList.toggle(
     "hidden",
     !(state.isHost && state.screen === "room" && !state.localPrepared)
@@ -652,6 +692,28 @@ async function handleMovieFileChange(event) {
   }
 }
 
+async function handleYoutubeSubmit(event) {
+  event.preventDefault();
+  if (!state.isHost) {
+    return;
+  }
+
+  const url = dom.youtubeUrlInput.value.trim();
+  const youtubeId = extractYoutubeId(url);
+  if (!youtubeId) {
+    showToast("ضع رابط يوتيوب صالح.");
+    dom.youtubeUrlInput.focus();
+    return;
+  }
+
+  try {
+    await prepareYoutubeMovie(url, youtubeId);
+  } catch (error) {
+    console.error(error);
+    showToast(getFriendlyErrorMessage(error));
+  }
+}
+
 async function prepareHostMovie(file) {
   if (!file.type.startsWith("video/") && !/\.(mkv|mp4|mov|webm)$/i.test(file.name)) {
     throw new Error("اختر ملف فيديو صالحاً.");
@@ -664,6 +726,7 @@ async function prepareHostMovie(file) {
   const startedAt = performance.now();
   setUploadProgress(12, file.name, "اختيار الملف");
 
+  state.hostMedia.source = "file";
   state.hostMedia.file = file;
   state.hostMedia.fileUrl = URL.createObjectURL(file);
   state.hostMedia.name = file.name;
@@ -696,11 +759,53 @@ async function prepareHostMovie(file) {
   updateModeUi();
   setUploadProgress(100, file.name, "جاهز");
   switchScreen("room");
+  updateModeUi();
   updateHostPlaybackUi();
   updateWaitingOverlay();
   revealHostControls();
   await flushPendingViewers();
   showToast("تم تجهيز الفيلم بنجاح.");
+}
+
+async function prepareYoutubeMovie(url, youtubeId) {
+  cleanupViewerReconnect();
+  resetHostMovieState();
+  closeAllPeers();
+
+  setUploadProgress(30, "YouTube", "تجهيز الرابط");
+
+  state.hostMedia = {
+    source: "youtube",
+    file: null,
+    fileUrl: "",
+    name: "YouTube",
+    size: 0,
+    duration: 0,
+    youtubeId,
+    youtubeUrl: url,
+  };
+  state.localPrepared = false;
+
+  const player = await ensureYoutubePlayer(youtubeId);
+  setUploadProgress(72, "YouTube", "تجهيز المشغل");
+  await wait(450);
+
+  const videoData = typeof player.getVideoData === "function" ? player.getVideoData() : null;
+  state.hostMedia.name = videoData?.title || "YouTube";
+  state.hostMedia.duration = getYoutubeDuration();
+  state.localPrepared = true;
+
+  await publishYoutubeMovieState();
+  updateModeUi();
+  setUploadProgress(100, state.hostMedia.name, "جاهز");
+  dom.youtubeUrlInput.value = "";
+  switchScreen("room");
+  updateModeUi();
+  updateHostPlaybackUi();
+  updateWaitingOverlay();
+  revealHostControls();
+  await flushPendingViewers();
+  showToast("تم تجهيز رابط يوتيوب.");
 }
 
 function setUploadProgress(percent, fileName, speedLabel) {
@@ -730,6 +835,7 @@ async function restorePersistedHostMovie(roomId) {
         });
 
   resetHostMovieState();
+  state.hostMedia.source = "file";
   state.hostMedia.file = file;
   state.hostMedia.fileUrl = URL.createObjectURL(file);
   state.hostMedia.name = persisted.name || file.name || "movie";
@@ -789,6 +895,8 @@ function resetHostMovieState() {
 
   disconnectMovieSource();
   stopHostVideoRenderLoop();
+  releaseHostWakeLock();
+  cleanupYouTubePlayer();
 
   if (state.hostCaptureStream) {
     state.hostCaptureStream.getTracks().forEach((track) => track.stop());
@@ -798,11 +906,14 @@ function resetHostMovieState() {
   state.hostVideoTrack = null;
   state.localPrepared = false;
   state.hostMedia = {
+    source: "",
     file: null,
     fileUrl: "",
     name: "",
     size: 0,
     duration: 0,
+    youtubeId: "",
+    youtubeUrl: "",
   };
 
   hideHostControls();
@@ -812,8 +923,9 @@ function resetHostMovieState() {
 }
 
 async function primeHostVideo() {
-  const captureMethod = dom.hostBroadcastCanvas.captureStream || dom.hostBroadcastCanvas.mozCaptureStream;
-  if (!captureMethod) {
+  const videoCaptureMethod = dom.hostVideo.captureStream || dom.hostVideo.mozCaptureStream;
+  const canvasCaptureMethod = dom.hostBroadcastCanvas.captureStream || dom.hostBroadcastCanvas.mozCaptureStream;
+  if (!videoCaptureMethod && !canvasCaptureMethod) {
     throw new Error("هذا المتصفح لا يدعم البث على هذا الجهاز.");
   }
 
@@ -826,11 +938,32 @@ async function primeHostVideo() {
   dom.hostVideo.pause();
   dom.hostVideo.currentTime = 0;
   dom.hostVideo.muted = false;
-  resizeHostBroadcastCanvas();
-  startHostVideoRenderLoop();
 
-  state.hostCaptureStream = captureMethod.call(dom.hostBroadcastCanvas, 30);
-  state.hostVideoTrack = state.hostCaptureStream.getVideoTracks()[0] || null;
+  if (videoCaptureMethod) {
+    try {
+      state.hostCaptureStream = videoCaptureMethod.call(dom.hostVideo);
+      state.hostVideoTrack = state.hostCaptureStream.getVideoTracks()[0] || null;
+    } catch (error) {
+      console.warn("video captureStream failed, falling back to canvas", error);
+      state.hostCaptureStream = null;
+      state.hostVideoTrack = null;
+    }
+  }
+
+  if (!state.hostVideoTrack && canvasCaptureMethod) {
+    if (state.hostCaptureStream) {
+      state.hostCaptureStream.getTracks().forEach((track) => track.stop());
+      state.hostCaptureStream = null;
+    }
+    resizeHostBroadcastCanvas();
+    startHostVideoRenderLoop();
+    state.hostCaptureStream = canvasCaptureMethod.call(dom.hostBroadcastCanvas, 30);
+  }
+
+  state.hostVideoTrack = state.hostCaptureStream?.getVideoTracks()[0] || null;
+  if (state.hostVideoTrack && "contentHint" in state.hostVideoTrack) {
+    state.hostVideoTrack.contentHint = "motion";
+  }
 
   if (!state.hostVideoTrack) {
     throw new Error("تعذر تجهيز مسار الفيديو للبث.");
@@ -928,10 +1061,334 @@ async function ensureHostAudioContext() {
   return state.hostAudioContext;
 }
 
+async function requestHostWakeLock() {
+  if (!state.isHost || !state.localPrepared || state.wakeLock || !navigator.wakeLock?.request) {
+    return;
+  }
+
+  try {
+    state.wakeLock = await navigator.wakeLock.request("screen");
+    state.wakeLock.addEventListener("release", () => {
+      state.wakeLock = null;
+    });
+  } catch (error) {
+    console.warn("wake lock unavailable", error);
+  }
+}
+
+async function releaseHostWakeLock() {
+  if (!state.wakeLock) {
+    return;
+  }
+
+  const lock = state.wakeLock;
+  state.wakeLock = null;
+  await lock.release().catch(() => {});
+}
+
+function handleVisibilityChange() {
+  const playing = isYoutubeMode() ? isYoutubePlaying() : !dom.hostVideo.paused && !dom.hostVideo.ended;
+  if (!state.isHost || !state.localPrepared || !playing) {
+    return;
+  }
+
+  if (document.visibilityState === "visible") {
+    requestHostWakeLock();
+    return;
+  }
+
+  const now = Date.now();
+  if (now - state.lastVisibilityToastAt > 9000) {
+    state.lastVisibilityToastAt = now;
+    showToast("ابق صفحة الغرفة مفتوحة حتى يستمر البث بسلاسة.");
+  }
+}
+
+function getActiveFilm() {
+  if (state.hostMedia.source) {
+    return state.hostMedia;
+  }
+  return state.roomData?.film || null;
+}
+
+function isYoutubeMode() {
+  return getActiveFilm()?.source === "youtube";
+}
+
+async function handleRoomMediaUpdate() {
+  const film = state.roomData?.film;
+  if (film?.source !== "youtube") {
+    if (!state.isHost || state.hostMedia.source !== "youtube") {
+      cleanupYouTubePlayer();
+    }
+    return;
+  }
+
+  if (state.isHost && state.hostMedia.source === "file") {
+    return;
+  }
+
+  await ensureYoutubePlayer(film.youtubeId);
+
+  const shouldRestoreHost = state.isHost && (!state.localPrepared || state.hostMedia.youtubeId !== film.youtubeId);
+  if (shouldRestoreHost) {
+    state.hostMedia = {
+      source: "youtube",
+      file: null,
+      fileUrl: "",
+      name: film.name || "YouTube",
+      size: 0,
+      duration: film.duration || 0,
+      youtubeId: film.youtubeId,
+      youtubeUrl: film.url || "",
+    };
+    state.localPrepared = true;
+    await applyYoutubeSync(state.roomData.sync, true, true);
+    await flushPendingViewers();
+  }
+
+  if (!state.isHost) {
+    await applyYoutubeSync(state.roomData.sync);
+    scheduleViewerReconnect(350);
+  }
+
+  updateModeUi();
+  updateHostPlaybackUi();
+  updateWaitingOverlay();
+}
+
+function loadYouTubeApi() {
+  if (window.YT?.Player) {
+    return Promise.resolve();
+  }
+
+  if (state.youtubeApiPromise) {
+    return state.youtubeApiPromise;
+  }
+
+  state.youtubeApiPromise = new Promise((resolve, reject) => {
+    const previousReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (typeof previousReady === "function") {
+        previousReady();
+      }
+      resolve();
+    };
+
+    const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+    if (existingScript) {
+      existingScript.addEventListener("error", reject, { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://www.youtube.com/iframe_api";
+    script.async = true;
+    script.onerror = () => reject(new Error("تعذر تحميل مشغل يوتيوب."));
+    document.head.append(script);
+  });
+
+  return state.youtubeApiPromise;
+}
+
+async function ensureYoutubePlayer(videoId) {
+  if (!videoId) {
+    throw new Error("رابط يوتيوب غير صالح.");
+  }
+
+  await loadYouTubeApi();
+  dom.youtubeShell.classList.remove("hidden");
+
+  if (state.youtubePlayer && state.youtubeVideoId === videoId) {
+    startYoutubeTickLoop();
+    return state.youtubePlayer;
+  }
+
+  if (state.youtubePlayer) {
+    state.youtubeVideoId = videoId;
+    state.youtubePlayer.cueVideoById(videoId);
+    startYoutubeTickLoop();
+    await wait(350);
+    return state.youtubePlayer;
+  }
+
+  dom.youtubePlayerMount.innerHTML = "";
+  const target = document.createElement("div");
+  target.id = `youtube-player-${Date.now()}`;
+  dom.youtubePlayerMount.append(target);
+
+  state.youtubeVideoId = videoId;
+  state.youtubePlayerReadyPromise = new Promise((resolve) => {
+    state.youtubePlayerReadyResolver = resolve;
+  });
+
+  state.youtubePlayer = new window.YT.Player(target, {
+    videoId,
+    width: "100%",
+    height: "100%",
+    playerVars: {
+      autoplay: 0,
+      controls: 0,
+      disablekb: 1,
+      fs: 0,
+      iv_load_policy: 3,
+      modestbranding: 1,
+      playsinline: 1,
+      rel: 0,
+    },
+    events: {
+      onReady: () => {
+        if (typeof state.youtubePlayerReadyResolver === "function") {
+          state.youtubePlayerReadyResolver(state.youtubePlayer);
+        }
+      },
+      onStateChange: handleYoutubeStateChange,
+      onError: () => showToast("تعذر تشغيل رابط يوتيوب."),
+    },
+  });
+
+  await state.youtubePlayerReadyPromise;
+  startYoutubeTickLoop();
+  return state.youtubePlayer;
+}
+
+function cleanupYouTubePlayer() {
+  stopYoutubeTickLoop();
+  if (state.youtubePlayer?.destroy) {
+    try {
+      state.youtubePlayer.destroy();
+    } catch (error) {
+      console.warn(error);
+    }
+  }
+  state.youtubePlayer = null;
+  state.youtubePlayerReadyPromise = null;
+  state.youtubePlayerReadyResolver = null;
+  state.youtubeVideoId = "";
+  state.youtubeApplyingSync = false;
+  dom.youtubePlayerMount.innerHTML = "";
+  dom.youtubeShell.classList.add("hidden");
+  dom.playUnlockOverlay.classList.add("hidden");
+}
+
+function handleYoutubeStateChange(event) {
+  if (!isYoutubeMode()) {
+    return;
+  }
+
+  if (!state.isHost && event.data === window.YT?.PlayerState?.PLAYING) {
+    dom.playUnlockOverlay.classList.add("hidden");
+  }
+
+  if (!state.isHost || !state.localPrepared || state.youtubeApplyingSync) {
+    return;
+  }
+
+  updateHostPlaybackUi();
+  if (isYoutubePlaying()) {
+    requestHostWakeLock();
+  } else {
+    releaseHostWakeLock();
+  }
+  syncHostPlayback(true);
+}
+
+async function applyYoutubeSync(sync = null, force = false, allowHost = false) {
+  if (!sync || (state.isHost && !allowHost)) {
+    return;
+  }
+
+  const film = getActiveFilm();
+  const player = await ensureYoutubePlayer(film?.youtubeId);
+  const duration = getYoutubeDuration() || sync.duration || 0;
+  const targetTime = getProjectedSyncTime(sync, duration);
+  const currentTime = getYoutubeCurrentTime();
+
+  state.youtubeApplyingSync = true;
+  try {
+    if (force || Math.abs(currentTime - targetTime) > 1.25) {
+      player.seekTo(targetTime, true);
+    }
+
+    if (sync.isPlaying) {
+      player.playVideo();
+      window.setTimeout(() => {
+        if (!state.isHost && isYoutubeMode() && !isYoutubePlaying()) {
+          dom.playUnlockOverlay.classList.remove("hidden");
+        }
+      }, 700);
+    } else {
+      player.pauseVideo();
+      dom.playUnlockOverlay.classList.add("hidden");
+    }
+  } finally {
+    window.setTimeout(() => {
+      state.youtubeApplyingSync = false;
+    }, 250);
+  }
+
+  renderViewerTime({
+    currentTime: targetTime,
+    duration,
+  });
+}
+
+function getProjectedSyncTime(sync, duration = 0) {
+  const baseTime = Number(sync?.currentTime || 0);
+  const drift = sync?.isPlaying ? Math.max((Date.now() - (sync.updatedAt || Date.now())) / 1000, 0) : 0;
+  const projected = baseTime + drift;
+  return duration ? Math.min(projected, Math.max(duration - 0.2, 0)) : projected;
+}
+
+function getYoutubeCurrentTime() {
+  const time = state.youtubePlayer?.getCurrentTime?.();
+  return Number.isFinite(time) ? time : state.roomData?.sync?.currentTime || 0;
+}
+
+function getYoutubeDuration() {
+  const duration = state.youtubePlayer?.getDuration?.();
+  const fallback = state.hostMedia.duration || state.roomData?.film?.duration || state.roomData?.sync?.duration || 0;
+  return Number.isFinite(duration) && duration > 0 ? duration : fallback;
+}
+
+function isYoutubePlaying() {
+  const playerState = state.youtubePlayer?.getPlayerState?.();
+  return playerState === window.YT?.PlayerState?.PLAYING || playerState === window.YT?.PlayerState?.BUFFERING;
+}
+
+function startYoutubeTickLoop() {
+  stopYoutubeTickLoop();
+  state.youtubeSyncTimer = window.setInterval(() => {
+    if (!isYoutubeMode()) {
+      stopYoutubeTickLoop();
+      return;
+    }
+
+    if (state.isHost) {
+      updateHostPlaybackUi();
+      syncHostPlayback(false);
+      return;
+    }
+
+    renderViewerTime({
+      currentTime: getYoutubeCurrentTime(),
+      duration: getYoutubeDuration(),
+    });
+  }, 900);
+}
+
+function stopYoutubeTickLoop() {
+  if (state.youtubeSyncTimer) {
+    clearInterval(state.youtubeSyncTimer);
+    state.youtubeSyncTimer = null;
+  }
+}
+
 async function publishHostMovieState() {
   const payload = {
     status: "live",
     film: {
+      source: "file",
       name: state.hostMedia.name,
       size: state.hostMedia.size,
       duration: roundTime(state.hostMedia.duration),
@@ -947,7 +1404,40 @@ async function publishHostMovieState() {
   await update(ref(db, `rooms/${state.roomId}`), payload);
 }
 
+async function publishYoutubeMovieState() {
+  const payload = {
+    status: "live",
+    film: {
+      source: "youtube",
+      name: state.hostMedia.name || "YouTube",
+      size: 0,
+      duration: roundTime(state.hostMedia.duration),
+      youtubeId: state.hostMedia.youtubeId,
+      url: state.hostMedia.youtubeUrl,
+      preparedAt: Date.now(),
+    },
+    sync: {
+      currentTime: 0,
+      duration: roundTime(state.hostMedia.duration),
+      isPlaying: false,
+      updatedAt: Date.now(),
+    },
+  };
+  await update(ref(db, `rooms/${state.roomId}`), payload);
+}
+
 function updateHostPlaybackUi() {
+  if (isYoutubeMode()) {
+    const duration = getYoutubeDuration();
+    const currentTime = getYoutubeCurrentTime();
+    dom.hostMovieName.textContent = getActiveFilm()?.name || "YouTube";
+    dom.hostTimeLabel.textContent = `${formatDuration(currentTime)} / ${formatDuration(duration)}`;
+    dom.hostSeekBar.value = duration ? `${(currentTime / duration) * 100}` : "0";
+    dom.hostPlayPauseButton.innerHTML = isYoutubePlaying() ? ICONS.pause : ICONS.play;
+    dom.hostPlayPauseButton.setAttribute("aria-label", isYoutubePlaying() ? "إيقاف" : "تشغيل");
+    return;
+  }
+
   const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : state.hostMedia.duration || 0;
   const currentTime = dom.hostVideo.currentTime || 0;
   dom.hostMovieName.textContent = state.hostMedia.name || "الفيلم";
@@ -961,6 +1451,18 @@ function handleHostSeek() {
   if (!state.isHost || !state.localPrepared) {
     return;
   }
+
+  if (isYoutubeMode()) {
+    const duration = getYoutubeDuration();
+    if (!duration || !state.youtubePlayer?.seekTo) {
+      return;
+    }
+    state.youtubePlayer.seekTo((Number(dom.hostSeekBar.value) / 100) * duration, true);
+    updateHostPlaybackUi();
+    syncHostPlayback(true);
+    return;
+  }
+
   const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : 0;
   if (!duration) {
     return;
@@ -970,6 +1472,21 @@ function handleHostSeek() {
 
 async function toggleHostPlayback() {
   if (!state.isHost || !state.localPrepared) {
+    return;
+  }
+
+  if (isYoutubeMode()) {
+    await ensureYoutubePlayer(getActiveFilm()?.youtubeId || state.hostMedia.youtubeId);
+    if (isYoutubePlaying()) {
+      state.youtubePlayer.pauseVideo();
+      releaseHostWakeLock();
+    } else {
+      state.youtubePlayer.playVideo();
+      requestHostWakeLock();
+    }
+    await wait(120);
+    updateHostPlaybackUi();
+    await syncHostPlayback(true);
     return;
   }
 
@@ -986,6 +1503,10 @@ async function toggleHostPlayback() {
 async function syncHostPlayback(force = false) {
   if (!state.isHost || !state.localPrepared || !state.roomId) {
     return;
+  }
+
+  if (isYoutubeMode()) {
+    return syncYoutubeHostPlayback(force);
   }
 
   const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : state.hostMedia.duration || 0;
@@ -1010,12 +1531,47 @@ async function syncHostPlayback(force = false) {
     status: "live",
     sync: payload,
     film: {
+      source: "file",
       name: state.hostMedia.name,
       size: state.hostMedia.size,
       duration: roundTime(duration),
       preparedAt: state.roomData?.film?.preparedAt || Date.now(),
     },
   }).catch((error) => console.error("sync error", error));
+}
+
+async function syncYoutubeHostPlayback(force = false) {
+  const duration = getYoutubeDuration();
+  const currentTime = getYoutubeCurrentTime();
+  const payload = {
+    currentTime: roundTime(currentTime),
+    duration: roundTime(duration),
+    isPlaying: isYoutubePlaying(),
+    updatedAt: Date.now(),
+  };
+
+  const signature = JSON.stringify({ source: "youtube", ...payload });
+  const now = Date.now();
+  if (!force && signature === state.lastSyncSignature && now - state.lastSyncSentAt < 850) {
+    return;
+  }
+
+  state.lastSyncSignature = signature;
+  state.lastSyncSentAt = now;
+
+  update(ref(db, `rooms/${state.roomId}`), {
+    status: "live",
+    sync: payload,
+    film: {
+      source: "youtube",
+      name: getActiveFilm()?.name || state.hostMedia.name || "YouTube",
+      size: 0,
+      duration: roundTime(duration),
+      youtubeId: getActiveFilm()?.youtubeId || state.hostMedia.youtubeId,
+      url: state.hostMedia.youtubeUrl || getActiveFilm()?.url || "",
+      preparedAt: state.roomData?.film?.preparedAt || Date.now(),
+    },
+  }).catch((error) => console.error("youtube sync error", error));
 }
 
 function renderViewerTime(sync = null) {
@@ -1028,6 +1584,7 @@ function renderViewerTime(sync = null) {
 function updateWaitingOverlay() {
   const creatorOnline = !!state.roomData?.creatorId && state.members.has(state.roomData.creatorId);
   const roomIsLive = state.roomData?.status === "live";
+  const youtubeMode = isYoutubeMode();
 
   if (state.isHost && state.localPrepared) {
     dom.waitingState.classList.add("hidden");
@@ -1052,6 +1609,17 @@ function updateWaitingOverlay() {
     dom.waitingTitle.textContent = "بانتظار الفيلم";
     dom.waitingText.textContent = "";
     dom.waitingState.classList.remove("hidden");
+    return;
+  }
+
+  if (youtubeMode) {
+    if (state.youtubePlayer) {
+      dom.waitingState.classList.add("hidden");
+    } else {
+      dom.waitingTitle.textContent = "جاري الاتصال";
+      dom.waitingText.textContent = "";
+      dom.waitingState.classList.remove("hidden");
+    }
     return;
   }
 
@@ -1168,6 +1736,37 @@ function renderMessage(message) {
   dom.messagesList.scrollTop = dom.messagesList.scrollHeight;
 }
 
+function renderSystemMessage(text) {
+  const item = document.createElement("div");
+  item.className = "system-message";
+  item.textContent = text;
+  dom.messagesList.append(item);
+  dom.messagesList.scrollTop = dom.messagesList.scrollHeight;
+}
+
+function renderPresenceEvents(nextMembers) {
+  if (!state.presenceReady) {
+    state.knownMemberIds = new Set(nextMembers.keys());
+    state.presenceReady = true;
+    return;
+  }
+
+  nextMembers.forEach((member, memberId) => {
+    if (memberId !== state.memberId && !state.knownMemberIds.has(memberId)) {
+      renderSystemMessage(`انضم ${member.name || "ضيف"}`);
+    }
+  });
+
+  state.knownMemberIds.forEach((memberId) => {
+    if (memberId !== state.memberId && !nextMembers.has(memberId)) {
+      const previousMember = state.members.get(memberId);
+      renderSystemMessage(`غادر ${previousMember?.name || "ضيف"}`);
+    }
+  });
+
+  state.knownMemberIds = new Set(nextMembers.keys());
+}
+
 function startReply(message) {
   state.replyDraft = {
     messageId: message.id || "",
@@ -1252,13 +1851,37 @@ function renderParticipants() {
   });
 }
 
-function openDrawer() {
+function updateViewerCount() {
+  const count = state.members.size || (state.roomId ? 1 : 0);
+  dom.viewerCountValue.textContent = `${count}`;
+}
+
+function openDrawer(event = null) {
+  event?.stopPropagation();
+  if (!dom.profileDrawer.classList.contains("hidden")) {
+    closeDrawer();
+    return;
+  }
   syncRenameSaveVisibility();
+  positionProfileDrawer(true);
   dom.profileDrawer.classList.remove("hidden");
 }
 
 function closeDrawer() {
   dom.profileDrawer.classList.add("hidden");
+}
+
+function positionProfileDrawer(force = false) {
+  if (!force && dom.profileDrawer.classList.contains("hidden")) {
+    return;
+  }
+
+  const rect = dom.profileButton.getBoundingClientRect();
+  const width = Math.min(340, window.innerWidth - 16);
+  const left = Math.min(Math.max(rect.right - width, 8), window.innerWidth - width - 8);
+  const top = Math.min(rect.bottom + 8, window.innerHeight - 16);
+  dom.profileDrawer.style.setProperty("--drawer-left", `${left}px`);
+  dom.profileDrawer.style.setProperty("--drawer-top", `${top}px`);
 }
 
 async function handleLeaveRoom() {
@@ -1296,10 +1919,13 @@ async function leaveRoom() {
   state.isHost = false;
   state.micEnabled = false;
   state.members = new Map();
+  state.knownMemberIds.clear();
+  state.presenceReady = false;
   state.messageIds.clear();
   dom.messagesList.innerHTML = "";
   cancelReply();
   renderParticipants();
+  updateViewerCount();
   updateMicButton();
   navigateHome();
   showToast("تم الخروج من الغرفة.");
@@ -1523,7 +2149,7 @@ async function sendSignal(targetId, payload) {
 }
 
 async function createOfferForViewer(viewerId) {
-  if (!state.localPrepared || !state.hostVideoTrack) {
+  if (!state.localPrepared || (!state.hostVideoTrack && !isYoutubeMode())) {
     state.pendingViewers.add(viewerId);
     return;
   }
@@ -1543,11 +2169,14 @@ async function createHostPeer(viewerId) {
   const pc = createPeer(viewerId, "host");
   const mix = await ensureViewerMix(viewerId);
   const outboundStream = new MediaStream();
-  outboundStream.addTrack(state.hostVideoTrack);
+  if (state.hostVideoTrack) {
+    outboundStream.addTrack(state.hostVideoTrack);
+  }
   outboundStream.addTrack(mix.audioTrack);
 
-  pc.addTrack(state.hostVideoTrack, outboundStream);
+  const videoSender = state.hostVideoTrack ? pc.addTrack(state.hostVideoTrack, outboundStream) : null;
   pc.addTrack(mix.audioTrack, outboundStream);
+  await tuneVideoSender(videoSender);
   pc.ontrack = (event) => handleIncomingViewerAudio(viewerId, event);
 
   const peer = {
@@ -1559,6 +2188,25 @@ async function createHostPeer(viewerId) {
 
   state.peers.set(viewerId, peer);
   return peer;
+}
+
+async function tuneVideoSender(sender) {
+  if (!sender?.getParameters || !sender?.setParameters) {
+    return;
+  }
+
+  const parameters = sender.getParameters();
+  if (!parameters.encodings?.length) {
+    return;
+  }
+
+  parameters.degradationPreference = "maintain-framerate";
+  parameters.encodings[0].maxBitrate = 5_000_000;
+  parameters.encodings[0].maxFramerate = 30;
+
+  await sender.setParameters(parameters).catch((error) => {
+    console.warn("video sender tuning failed", error);
+  });
 }
 
 function createPeer(peerId, role) {
@@ -2045,6 +2693,12 @@ function syncViewerExpandState() {
 }
 
 async function attemptRemotePlayback() {
+  if (isYoutubeMode()) {
+    await applyYoutubeSync(state.roomData?.sync, true);
+    dom.playUnlockOverlay.classList.add("hidden");
+    return;
+  }
+
   if (!dom.remoteVideo.srcObject && !dom.remoteAudio.srcObject) {
     return;
   }
@@ -2186,6 +2840,39 @@ function sanitizeName(value) {
 function truncateReplyText(value) {
   const text = (value || "").trim().replace(/\s+/g, " ");
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+function extractYoutubeId(value) {
+  const raw = (value || "").trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(raw)) {
+    return raw;
+  }
+
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") {
+      return normalizeYoutubeId(url.pathname.split("/").filter(Boolean)[0]);
+    }
+    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+      const watchId = normalizeYoutubeId(url.searchParams.get("v"));
+      if (watchId) {
+        return watchId;
+      }
+      const parts = url.pathname.split("/").filter(Boolean);
+      const markerIndex = parts.findIndex((part) => ["embed", "shorts", "live"].includes(part));
+      return normalizeYoutubeId(markerIndex >= 0 ? parts[markerIndex + 1] : "");
+    }
+  } catch (error) {
+    return "";
+  }
+
+  return "";
+}
+
+function normalizeYoutubeId(value) {
+  const id = (value || "").trim();
+  return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
 }
 
 function syncRenameSaveVisibility() {
@@ -2531,7 +3218,9 @@ function cleanupMediaResources() {
   cleanupViewerReconnect();
   stopViewerCanvasLoop();
   stopHostVideoRenderLoop();
+  cleanupYouTubePlayer();
   disconnectMovieSource();
+  releaseHostWakeLock();
   closeAllPeers();
   clearTimeout(state.viewerControlsTimer);
   clearTimeout(state.hostControlsTimer);

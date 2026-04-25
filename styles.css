@@ -383,6 +383,22 @@ button {
   font-size: 1.8rem;
 }
 
+.youtube-form {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.youtube-form .text-input {
+  min-width: 0;
+}
+
+.youtube-form .secondary-button {
+  flex: 0 0 auto;
+  min-width: 92px;
+}
+
 .upload-status {
   margin-top: 22px;
   border: 1px solid var(--line);
@@ -566,6 +582,25 @@ button {
   font-size: 0.96rem;
 }
 
+.viewer-count-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 181, 106, 0.18);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--cream);
+  font-weight: 800;
+}
+
+.viewer-count-pill svg {
+  width: 18px;
+  height: 18px;
+  fill: var(--gold);
+}
+
 .stage-panel {
   padding: 12px;
   min-height: 0;
@@ -626,10 +661,32 @@ button {
   pointer-events: none;
 }
 
+.youtube-shell {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #02060b;
+}
+
+.youtube-player-mount,
+.youtube-player-mount iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.youtube-interaction-blocker {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: transparent;
+}
+
 .waiting-state,
 .play-unlock-overlay {
   position: absolute;
   inset: 0;
+  z-index: 4;
   display: grid;
   place-content: center;
   justify-items: center;
@@ -866,6 +923,16 @@ button {
   border-color: rgba(214, 181, 106, 0.28);
 }
 
+.system-message {
+  align-self: center;
+  max-width: 88%;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+  direction: rtl;
+}
+
 .message-head {
   display: flex;
   align-items: center;
@@ -1026,7 +1093,6 @@ button {
   flex: 0 0 auto;
 }
 
-.drawer,
 .modal {
   position: fixed;
   inset: 0;
@@ -1038,7 +1104,27 @@ button {
   backdrop-filter: blur(14px);
 }
 
-.drawer-card,
+.drawer {
+  position: fixed;
+  top: var(--drawer-top, 72px);
+  left: var(--drawer-left, 12px);
+  z-index: 40;
+  width: min(340px, calc(100vw - 16px));
+  padding: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.drawer-card {
+  width: 100%;
+  max-height: min(68dvh, 560px);
+  overflow: auto;
+  padding: 14px;
+  position: relative;
+  pointer-events: auto;
+  border-radius: 22px;
+}
+
 .modal-card {
   width: min(480px, 100%);
   padding: 24px;
@@ -1047,9 +1133,9 @@ button {
 
 .drawer-close {
   position: absolute;
-  top: 10px;
-  left: 14px;
-  font-size: 2rem;
+  top: 8px;
+  left: 10px;
+  font-size: 1.35rem;
   line-height: 1;
   color: var(--muted);
 }
@@ -1057,20 +1143,34 @@ button {
 .drawer-profile {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
+  padding-inline-end: 30px;
 }
 
 .drawer-avatar {
-  width: 76px;
-  height: 76px;
+  width: 44px;
+  height: 44px;
 }
 
 .drawer-name {
-  font-size: 1.45rem;
+  font-size: 1.05rem;
 }
 
 .rename-form {
-  margin-top: 22px;
+  margin-top: 14px;
+}
+
+.drawer .text-input {
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 15px;
+}
+
+.drawer .secondary-button,
+.drawer .danger-button {
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 0.92rem;
 }
 
 .rename-form + .danger-button {
@@ -1078,38 +1178,38 @@ button {
 }
 
 .participants-block {
-  margin-top: 24px;
+  margin-top: 16px;
 }
 
 .participants-title {
   font-family: "Changa", sans-serif;
-  font-size: 1.32rem;
+  font-size: 1rem;
 }
 
 .participants-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-height: 280px;
+  gap: 8px;
+  max-height: 210px;
   overflow: auto;
-  margin-top: 14px;
-  padding-inline-end: 6px;
+  margin-top: 10px;
+  padding-inline-end: 4px;
 }
 
 .participant-item {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  gap: 12px;
+  gap: 9px;
   align-items: center;
-  padding: 12px 14px;
-  border-radius: 18px;
+  padding: 9px 10px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .participant-avatar {
-  width: 50px;
-  height: 50px;
+  width: 34px;
+  height: 34px;
 }
 
 .participant-name-row {
@@ -1276,6 +1376,17 @@ body.theater-mode .media-shell {
     font-size: 0.88rem;
   }
 
+  .viewer-count-pill {
+    min-height: 34px;
+    padding: 5px 8px;
+    font-size: 0.82rem;
+  }
+
+  .viewer-count-pill svg {
+    width: 16px;
+    height: 16px;
+  }
+
   .icon-button {
     width: 36px;
     height: 36px;
@@ -1337,17 +1448,18 @@ body.theater-mode .media-shell {
     min-height: 220px;
   }
 
+  .youtube-form {
+    flex-direction: column;
+  }
+
   .drawer {
-    align-items: end;
-    padding: 0;
+    width: min(330px, calc(100vw - 16px));
   }
 
   .drawer-card {
-    width: 100%;
-    max-height: 88dvh;
+    max-height: 68dvh;
     overflow: auto;
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
+    border-radius: 22px;
   }
 
   body.theater-mode .viewer-controls {

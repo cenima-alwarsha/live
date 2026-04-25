@@ -68,6 +68,18 @@
               <span class="upload-title">تحميل الفيلم</span>
             </label>
 
+            <form id="youtubeForm" class="youtube-form">
+              <input
+                id="youtubeUrlInput"
+                class="text-input"
+                type="url"
+                placeholder="رابط يوتيوب"
+                autocomplete="off"
+                inputmode="url"
+              />
+              <button id="youtubeSubmitButton" class="secondary-button" type="submit">يوتيوب</button>
+            </form>
+
             <div id="uploadStatusCard" class="upload-status hidden">
               <div class="upload-meta">
                 <div>
@@ -115,6 +127,15 @@
                   <img id="profileAvatarSmall" class="profile-chip-avatar" alt="" />
                   <span id="profileNameSmall" class="profile-chip-name">ضيف</span>
                 </button>
+
+                <div id="viewerCountPill" class="viewer-count-pill" aria-label="عدد الموجودين في الغرفة">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M12 5c4.8 0 8.4 3.4 9.7 6.2.2.5.2 1.1 0 1.6C20.4 15.6 16.8 19 12 19s-8.4-3.4-9.7-6.2a1.9 1.9 0 0 1 0-1.6C3.6 8.4 7.2 5 12 5Zm0 2C8.2 7 5.2 9.6 4.2 12c1 2.4 4 5 7.8 5s6.8-2.6 7.8-5c-1-2.4-4-5-7.8-5Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z"
+                    />
+                  </svg>
+                  <span id="viewerCountValue">0</span>
+                </div>
               </div>
             </header>
 
@@ -141,6 +162,11 @@
 
                 <canvas id="hostBroadcastCanvas" class="broadcast-canvas"></canvas>
                 <canvas id="viewerCanvas" class="viewer-canvas"></canvas>
+
+                <div id="youtubeShell" class="youtube-shell hidden">
+                  <div id="youtubePlayerMount" class="youtube-player-mount"></div>
+                  <div id="youtubeInteractionBlocker" class="youtube-interaction-blocker"></div>
+                </div>
 
                 <div id="waitingState" class="waiting-state">
                   <h3 id="waitingTitle">بانتظار الفيلم</h3>
