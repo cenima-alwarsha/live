@@ -32,7 +32,7 @@ const ACTIVE_ROOM_STORAGE_KEY = "cinema-al-warsha-active-room";
 const HOST_MEDIA_DB_NAME = "cinema-al-warsha-db";
 const HOST_MEDIA_STORE_NAME = "host-media";
 const YOUTUBE_SEARCH_API_KEY = firebaseConfig.apiKey;
-const IDLE_ROOM_TTL_MS = 10 * 60 * 1000;
+const IDLE_ROOM_TTL_MS = 30 * 60 * 1000;
 const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
 const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
 
@@ -84,6 +84,7 @@ const dom = {
   displayNameInput: document.getElementById("displayNameInput"),
   identitySubmitButton: document.getElementById("identitySubmitButton"),
   openJoinRoomButton: document.getElementById("openJoinRoomButton"),
+  leaveJoinLinkButton: document.getElementById("leaveJoinLinkButton"),
   joinRoomModal: document.getElementById("joinRoomModal"),
   joinRoomForm: document.getElementById("joinRoomForm"),
   joinRoomInput: document.getElementById("joinRoomInput"),
@@ -127,6 +128,7 @@ const dom = {
   viewerControls: document.getElementById("viewerControls"),
   viewerCurrentTime: document.getElementById("viewerCurrentTime"),
   viewerRemainingTime: document.getElementById("viewerRemainingTime"),
+  viewerSeekBar: document.getElementById("viewerSeekBar"),
   focusChatButton: document.getElementById("focusChatButton"),
   viewerFullscreenButton: document.getElementById("viewerFullscreenButton"),
   playUnlockOverlay: document.getElementById("playUnlockOverlay"),
@@ -140,6 +142,7 @@ const dom = {
   hostFullscreenButton: document.getElementById("hostFullscreenButton"),
   replaceMovieButton: document.getElementById("replaceMovieButton"),
   hostSeekBar: document.getElementById("hostSeekBar"),
+  theaterChatOverlay: document.getElementById("theaterChatOverlay"),
   hostReloadNotice: document.getElementById("hostReloadNotice"),
   chatSection: document.getElementById("chatSection"),
   membersCountBadge: document.getElementById("membersCountBadge"),
@@ -161,6 +164,8 @@ const dom = {
   renameSaveButton: document.getElementById("renameSaveButton"),
   leaveRoomButton: document.getElementById("leaveRoomButton"),
   participantsList: document.getElementById("participantsList"),
+  membersDrawer: document.getElementById("membersDrawer"),
+  closeMembersDrawerButton: document.getElementById("closeMembersDrawerButton"),
   confirmModal: document.getElementById("confirmModal"),
   confirmTitle: document.getElementById("confirmTitle"),
   confirmMessage: document.getElementById("confirmMessage"),
@@ -303,6 +308,7 @@ async function boot() {
 function attachEvents() {
   dom.identityForm.addEventListener("submit", handleIdentitySubmit);
   dom.openJoinRoomButton.addEventListener("click", openJoinRoomModal);
+  dom.leaveJoinLinkButton.addEventListener("click", leaveJoinLinkPage);
   dom.closeJoinRoomButton.addEventListener("click", closeJoinRoomModal);
   dom.joinRoomForm.addEventListener("submit", handleJoinRoomSubmit);
   dom.joinRoomInput.addEventListener("input", handleJoinRoomInput);
@@ -315,7 +321,10 @@ function attachEvents() {
   dom.hostMenuButton.addEventListener("click", toggleHostMenu);
   dom.copyRoomLinkButton.addEventListener("click", copyRoomLink);
   dom.profileButton.addEventListener("click", openDrawer);
+  dom.viewerCountPill.addEventListener("click", openMembersDrawer);
+  dom.viewerCountPill.addEventListener("keydown", handleMembersPillKeydown);
   dom.closeDrawerButton.addEventListener("click", closeDrawer);
+  dom.closeMembersDrawerButton.addEventListener("click", closeMembersDrawer);
   dom.renameForm.addEventListener("submit", handleRenameSubmit);
   dom.renameInput.addEventListener("input", syncRenameSaveVisibility);
   dom.leaveRoomButton.addEventListener("click", handleLeaveRoom);
@@ -416,6 +425,9 @@ function attachEvents() {
     if (!event.target.closest("#profileDrawer") && !event.target.closest("#profileButton")) {
       closeDrawer();
     }
+    if (!event.target.closest("#membersDrawer") && !event.target.closest("#viewerCountPill")) {
+      closeMembersDrawer();
+    }
     if (
       !dom.joinRoomModal.classList.contains("hidden") &&
       event.target === dom.joinRoomModal
@@ -424,7 +436,10 @@ function attachEvents() {
     }
   });
 
-  window.addEventListener("resize", positionProfileDrawer);
+  window.addEventListener("resize", () => {
+    positionProfileDrawer();
+    positionMembersDrawer();
+  });
 
   window.addEventListener("beforeunload", cleanupMediaResources);
 }
@@ -462,6 +477,13 @@ function openJoinRoomModal() {
 
 function closeJoinRoomModal() {
   dom.joinRoomModal.classList.add("hidden");
+}
+
+function leaveJoinLinkPage() {
+  state.routeRoomId = null;
+  history.replaceState({}, "", getBasePath());
+  updateHomeMode();
+  switchScreen("home");
 }
 
 function handleJoinRoomInput() {
@@ -603,7 +625,6 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   updateModeUi();
 
   await registerPresence();
-  touchRoomActivity(true).catch((error) => console.warn("activity touch failed", error));
   subscribeToRoom(roomId);
 
   if (state.isHost) {
@@ -741,22 +762,6 @@ async function touchRoomIndex(roomId, lastActivity = Date.now()) {
   await set(ref(db, `roomIndex/${roomId}`), { lastActivity });
 }
 
-async function touchRoomActivity(force = false) {
-  if (!state.roomId) {
-    return;
-  }
-
-  const now = Date.now();
-  if (!shouldTouchRoomActivity(now, force)) {
-    return;
-  }
-
-  await Promise.allSettled([
-    update(ref(db, `rooms/${state.roomId}`), { lastActivity: now }),
-    touchRoomIndex(state.roomId, now),
-  ]);
-}
-
 async function deleteRoomById(roomId) {
   if (!/^\d{4}$/.test(roomId || "")) {
     return;
@@ -820,10 +825,14 @@ function updateHomeMode() {
     dom.homeHeading.textContent = "اكتب اسمك";
     dom.homeSubtitle.textContent = "";
     dom.identitySubmitButton.textContent = "دخول الغرفة";
+    dom.openJoinRoomButton.classList.add("hidden");
+    dom.leaveJoinLinkButton.classList.remove("hidden");
   } else {
     dom.homeHeading.textContent = "اكتب اسمك";
     dom.homeSubtitle.textContent = "";
     dom.identitySubmitButton.textContent = "إنشاء غرفة السينما";
+    dom.openJoinRoomButton.classList.remove("hidden");
+    dom.leaveJoinLinkButton.classList.add("hidden");
   }
 }
 
@@ -846,7 +855,9 @@ function switchScreen(name) {
     hideHostControls();
     dom.hostMenuPanel.classList.add("hidden");
     closeDrawer();
+    closeMembersDrawer();
     closeJoinRoomModal();
+    dom.theaterChatOverlay.innerHTML = "";
   }
 }
 
@@ -2045,9 +2056,17 @@ function updateHostPlaybackUi() {
 }
 
 function setHostSeekProgress(percent) {
+  setSeekProgress(dom.hostSeekBar, percent);
+}
+
+function setViewerSeekProgress(percent) {
+  setSeekProgress(dom.viewerSeekBar, percent);
+}
+
+function setSeekProgress(element, percent) {
   const safePercent = Math.min(Math.max(Number(percent) || 0, 0), 100);
-  dom.hostSeekBar.value = `${safePercent}`;
-  dom.hostSeekBar.style.setProperty("--seek-progress", `${safePercent}%`);
+  element.value = `${safePercent}`;
+  element.style.setProperty("--seek-progress", `${safePercent}%`);
 }
 
 function handleHostSeek() {
@@ -2216,6 +2235,7 @@ function renderViewerTime(sync = null) {
   const duration = sync?.duration || 0;
   dom.viewerCurrentTime.textContent = formatDuration(currentTime);
   dom.viewerRemainingTime.textContent = `- ${formatDuration(Math.max(duration - currentTime, 0))}`;
+  setViewerSeekProgress(duration ? (currentTime / duration) * 100 : 0);
 }
 
 function updateWaitingOverlay() {
@@ -2295,7 +2315,6 @@ async function handleSendMessage(event) {
     }
 
     await push(ref(db, `rooms/${state.roomId}/messages`), payload);
-    touchRoomActivity().catch((error) => console.warn("activity touch failed", error));
   } catch (error) {
     console.error(error);
     showToast(getFriendlyErrorMessage(error));
@@ -2372,6 +2391,7 @@ function renderMessage(message) {
   item.append(avatar, card);
   dom.messagesList.append(item);
   dom.messagesList.scrollTop = dom.messagesList.scrollHeight;
+  showTheaterChatMessage(message);
 }
 
 function renderSystemMessage(text) {
@@ -2380,6 +2400,38 @@ function renderSystemMessage(text) {
   item.textContent = text;
   dom.messagesList.append(item);
   dom.messagesList.scrollTop = dom.messagesList.scrollHeight;
+}
+
+function showTheaterChatMessage(message) {
+  if (!isExpandedPlayer() || state.screen !== "room") {
+    return;
+  }
+
+  if (!message.createdAt || message.createdAt < state.joinedAt - 5000) {
+    return;
+  }
+
+  const toast = document.createElement("div");
+  toast.className = "theater-chat-toast";
+
+  const name = document.createElement("div");
+  name.className = "theater-chat-name";
+  name.textContent = message.senderName || "ضيف";
+
+  const text = document.createElement("div");
+  text.className = "theater-chat-text";
+  text.textContent = message.text || "";
+
+  toast.append(name, text);
+  dom.theaterChatOverlay.append(toast);
+
+  while (dom.theaterChatOverlay.children.length > 3) {
+    dom.theaterChatOverlay.firstElementChild?.remove();
+  }
+
+  window.setTimeout(() => {
+    toast.remove();
+  }, 4200);
 }
 
 function renderPresenceEvents(nextMembers) {
@@ -2492,6 +2544,7 @@ function renderParticipants() {
 function updateViewerCount() {
   const count = state.members.size || (state.roomId ? 1 : 0);
   dom.viewerCountValue.textContent = `${count}`;
+  dom.viewerCountPill.setAttribute("aria-label", `المتصلون في الغرفة ${count}`);
 }
 
 function openDrawer(event = null) {
@@ -2509,6 +2562,35 @@ function closeDrawer() {
   dom.profileDrawer.classList.add("hidden");
 }
 
+function handleMembersPillKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+
+  event.preventDefault();
+  openMembersDrawer(event);
+}
+
+function openMembersDrawer(event = null) {
+  event?.stopPropagation();
+  if (!state.roomId) {
+    return;
+  }
+
+  if (!dom.membersDrawer.classList.contains("hidden")) {
+    closeMembersDrawer();
+    return;
+  }
+
+  renderParticipants();
+  positionMembersDrawer(true);
+  dom.membersDrawer.classList.remove("hidden");
+}
+
+function closeMembersDrawer() {
+  dom.membersDrawer.classList.add("hidden");
+}
+
 function positionProfileDrawer(force = false) {
   if (!force && dom.profileDrawer.classList.contains("hidden")) {
     return;
@@ -2520,6 +2602,19 @@ function positionProfileDrawer(force = false) {
   const top = Math.min(rect.bottom + 8, window.innerHeight - 16);
   dom.profileDrawer.style.setProperty("--drawer-left", `${left}px`);
   dom.profileDrawer.style.setProperty("--drawer-top", `${top}px`);
+}
+
+function positionMembersDrawer(force = false) {
+  if (!force && dom.membersDrawer.classList.contains("hidden")) {
+    return;
+  }
+
+  const rect = dom.viewerCountPill.getBoundingClientRect();
+  const width = Math.min(320, window.innerWidth - 16);
+  const left = Math.min(Math.max(rect.right - width, 8), window.innerWidth - width - 8);
+  const top = Math.min(rect.bottom + 8, window.innerHeight - 16);
+  dom.membersDrawer.style.setProperty("--drawer-left", `${left}px`);
+  dom.membersDrawer.style.setProperty("--drawer-top", `${top}px`);
 }
 
 async function handleLeaveRoom() {
@@ -2539,6 +2634,7 @@ async function leaveRoom() {
   cleanupViewerReconnect();
   closeAllPeers();
   closeDrawer();
+  closeMembersDrawer();
 
   if (roomId && memberId) {
     await remove(ref(db, `rooms/${roomId}/members/${memberId}`)).catch(() => {});
@@ -2577,6 +2673,7 @@ async function deleteCurrentRoom(successMessage = "تم حذف الغرفة.") {
   cleanupViewerReconnect();
   closeAllPeers();
   closeDrawer();
+  closeMembersDrawer();
   resetHostMovieState();
 
   await deleteRoomById(roomId);
@@ -2627,7 +2724,6 @@ async function handleRenameSubmit(event) {
 
   updateProfileUi();
   await update(ref(db, `rooms/${state.roomId}/members/${state.memberId}`), buildMemberPayload());
-  touchRoomActivity(true).catch((error) => console.warn("activity touch failed", error));
 
   if (state.isHost) {
     update(ref(db, `rooms/${state.roomId}`), { creatorName: nextName }).catch(() => {});
@@ -2767,7 +2863,6 @@ async function refreshMemberPresence() {
   }
 
   await update(ref(db, `rooms/${state.roomId}/members/${state.memberId}`), buildMemberPayload());
-  touchRoomActivity().catch((error) => console.warn("activity touch failed", error));
 }
 
 async function askForConfirmation(title, message) {
@@ -3363,12 +3458,16 @@ async function toggleMediaFullscreen() {
 
 function setTheaterMode(enabled) {
   document.body.classList.toggle("theater-mode", enabled && state.screen === "room");
+  if (!enabled) {
+    dom.theaterChatOverlay.innerHTML = "";
+  }
   syncViewerExpandState();
 }
 
 function handleFullscreenChange() {
   if (!document.fullscreenElement && !document.body.classList.contains("theater-mode")) {
     unlockLandscapeMode();
+    dom.theaterChatOverlay.innerHTML = "";
   }
   syncViewerExpandState();
 }
@@ -3385,11 +3484,15 @@ function unlockLandscapeMode() {
 }
 
 function syncViewerExpandState() {
-  const expanded = !!document.fullscreenElement || document.body.classList.contains("theater-mode");
+  const expanded = isExpandedPlayer();
   dom.viewerFullscreenButton.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
   dom.viewerFullscreenButton.setAttribute("aria-label", expanded ? "تصغير الشاشة" : "تكبير الشاشة");
   dom.hostFullscreenButton.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
   dom.hostFullscreenButton.setAttribute("aria-label", expanded ? "تصغير الشاشة" : "تكبير الشاشة");
+}
+
+function isExpandedPlayer() {
+  return !!document.fullscreenElement || document.body.classList.contains("theater-mode");
 }
 
 async function attemptRemotePlayback() {

@@ -843,6 +843,7 @@ html.resume-room #connectingScreen {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  cursor: pointer;
   min-height: 38px;
   padding: 6px 10px;
   border-radius: 999px;
@@ -962,16 +963,20 @@ html.resume-room #connectingScreen {
 
 .viewer-controls {
   position: absolute;
-  inset-inline: 10px;
-  bottom: 10px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px;
+  inset: 0;
+  display: block;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.44), transparent 26%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.7), transparent 28%);
   z-index: 5;
 }
 
 .viewer-time-group {
+  position: absolute;
+  left: 14px;
+  bottom: 35px;
+  z-index: 8;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -985,7 +990,6 @@ html.resume-room #connectingScreen {
   backdrop-filter: blur(16px);
 }
 
-.viewer-actions,
 .host-button-row,
 .modal-actions {
   display: flex;
@@ -1016,6 +1020,20 @@ html.resume-room #connectingScreen {
 
 .time-divider {
   color: rgba(255, 255, 255, 0.42);
+}
+
+.viewer-fullscreen-button {
+  position: absolute;
+  right: 14px;
+  bottom: 34px;
+  z-index: 8;
+}
+
+.viewer-chat-button {
+  position: absolute;
+  right: 62px;
+  bottom: 34px;
+  z-index: 8;
 }
 
 .host-controls {
@@ -1132,6 +1150,10 @@ html.resume-room #connectingScreen {
   border-radius: 50%;
   background: linear-gradient(180deg, #f8e5b6, #d6b56a);
   box-shadow: 0 4px 20px rgba(214, 181, 106, 0.45);
+}
+
+.viewer-seek-bar {
+  pointer-events: none;
 }
 
 .overlay-icon-button-primary {
@@ -1534,6 +1556,10 @@ html.resume-room #connectingScreen {
   margin-top: 16px;
 }
 
+.members-drawer-card .participants-block {
+  margin-top: 0;
+}
+
 .participants-title {
   font-family: "Changa", sans-serif;
   font-size: 1rem;
@@ -1648,6 +1674,53 @@ body.theater-mode .media-shell {
   aspect-ratio: auto;
   border-radius: 0;
   border: 0;
+}
+
+.theater-chat-overlay {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 82px;
+  z-index: 10;
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.theater-chat-toast {
+  max-width: min(72vw, 520px);
+  padding: 9px 12px;
+  border-radius: 16px;
+  background: rgba(4, 9, 16, 0.78);
+  border: 1px solid rgba(214, 181, 106, 0.22);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(16px);
+  animation: theaterChatIn 180ms ease both;
+}
+
+.theater-chat-name {
+  color: var(--gold);
+  font-size: 0.78rem;
+  font-weight: 800;
+  margin-bottom: 2px;
+}
+
+.theater-chat-text {
+  color: var(--cream);
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+@keyframes theaterChatIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (min-width: 981px) {

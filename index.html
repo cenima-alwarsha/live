@@ -119,6 +119,9 @@
               <button id="openJoinRoomButton" class="secondary-button join-room-button" type="button">
                 الإنضمام برقم الغرفة
               </button>
+              <button id="leaveJoinLinkButton" class="danger-button join-room-button hidden" type="button">
+                خروج
+              </button>
             </div>
           </div>
         </section>
@@ -188,7 +191,13 @@
                   <strong id="roomCodeBadge">0000</strong>
                 </div>
 
-                <div id="viewerCountPill" class="viewer-count-pill" aria-label="عدد الموجودين في الغرفة">
+                <div
+                  id="viewerCountPill"
+                  class="viewer-count-pill"
+                  role="button"
+                  tabindex="0"
+                  aria-label="عدد الموجودين في الغرفة"
+                >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path
                       d="M12 5c4.8 0 8.4 3.4 9.7 6.2.2.5.2 1.1 0 1.6C20.4 15.6 16.8 19 12 19s-8.4-3.4-9.7-6.2a1.9 1.9 0 0 1 0-1.6C3.6 8.4 7.2 5 12 5Zm0 2C8.2 7 5.2 9.6 4.2 12c1 2.4 4 5 7.8 5s6.8-2.6 7.8-5c-1-2.4-4-5-7.8-5Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z"
@@ -263,32 +272,41 @@
                     <span class="time-divider">/</span>
                     <span id="viewerRemainingTime">- 00:00</span>
                   </div>
-                  <div class="viewer-actions">
-                    <button
-                      id="focusChatButton"
-                      class="viewer-icon-button"
-                      type="button"
-                      aria-label="الدردشة"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d="M7 18.5c-.9 0-1.6-.3-2.2-.9-.6-.6-.8-1.3-.8-2.1V7.7c0-.9.3-1.6.9-2.2.6-.6 1.3-.9 2.1-.9h10c.9 0 1.6.3 2.2.9.6.6.9 1.3.9 2.2v7.8c0 .8-.3 1.5-.9 2.1-.6.6-1.3.9-2.2.9H9.6l-3.3 2.9c-.2.1-.4.2-.6.1-.3 0-.4-.3-.4-.6v-2.4H7Z"
-                        />
-                      </svg>
-                    </button>
-                    <button
-                      id="viewerFullscreenButton"
-                      class="viewer-icon-button"
-                      type="button"
-                      aria-label="تكبير الشاشة"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d="M4 10V4h6v2H6v4H4Zm10-6h6v6h-2V6h-4V4ZM4 20v-6h2v4h4v2H4Zm14-2v-4h2v6h-6v-2h4Z"
-                        />
-                      </svg>
-                    </button>
-                  </div>
+                  <button
+                    id="focusChatButton"
+                    class="viewer-icon-button viewer-chat-button"
+                    type="button"
+                    aria-label="الدردشة"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M7 18.5c-.9 0-1.6-.3-2.2-.9-.6-.6-.8-1.3-.8-2.1V7.7c0-.9.3-1.6.9-2.2.6-.6 1.3-.9 2.1-.9h10c.9 0 1.6.3 2.2.9.6.6.9 1.3.9 2.2v7.8c0 .8-.3 1.5-.9 2.1-.6.6-1.3.9-2.2.9H9.6l-3.3 2.9c-.2.1-.4.2-.6.1-.3 0-.4-.3-.4-.6v-2.4H7Z"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    id="viewerFullscreenButton"
+                    class="viewer-icon-button viewer-fullscreen-button"
+                    type="button"
+                    aria-label="تكبير الشاشة"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M4 10V4h6v2H6v4H4Zm10-6h6v6h-2V6h-4V4ZM4 20v-6h2v4h4v2H4Zm14-2v-4h2v6h-6v-2h4Z"
+                      />
+                    </svg>
+                  </button>
+                  <input
+                    id="viewerSeekBar"
+                    class="seek-bar viewer-seek-bar"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value="0"
+                    tabindex="-1"
+                    aria-label="تقدم الفيلم"
+                    aria-disabled="true"
+                  />
                 </div>
 
                 <div id="hostControlsOverlay" class="host-controls hidden">
@@ -360,6 +378,8 @@
                     اضغط لبدء البث
                   </button>
                 </div>
+
+                <div id="theaterChatOverlay" class="theater-chat-overlay" aria-live="polite"></div>
               </div>
 
               <div id="hostReloadNotice" class="host-reload-notice hidden">
@@ -425,7 +445,12 @@
         </form>
 
         <button id="leaveRoomButton" class="danger-button full-width" type="button">خروج</button>
+      </div>
+    </aside>
 
+    <aside id="membersDrawer" class="drawer hidden">
+      <div class="drawer-card panel members-drawer-card">
+        <button id="closeMembersDrawerButton" class="drawer-close" type="button" aria-label="إغلاق">×</button>
         <div class="participants-block">
           <div class="participants-title">المتصلون</div>
           <div id="participantsList" class="participants-list"></div>
