@@ -16,6 +16,33 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
+    <script>
+      (() => {
+        try {
+          const normalizeDigits = (value) =>
+            String(value || "")
+              .replace(/[٠-٩]/g, (digit) => `${digit.charCodeAt(0) - 0x0660}`)
+              .replace(/[۰-۹]/g, (digit) => `${digit.charCodeAt(0) - 0x06f0}`);
+          const getRoomCode = (value) => {
+            const code = normalizeDigits(value).replace(/\D/g, "").slice(0, 4);
+            return /^\d{4}$/.test(code) ? code : "";
+          };
+          const queryRoom = getRoomCode(new URLSearchParams(location.search).get("room"));
+          const lastSegment = location.pathname.split("/").filter(Boolean).at(-1);
+          const routeRoom = queryRoom || getRoomCode(lastSegment);
+          const activeRoom =
+            getRoomCode(localStorage.getItem("cinema-al-warsha-active-room")) ||
+            getRoomCode(sessionStorage.getItem("cinema-al-warsha-active-room"));
+          const sessions = JSON.parse(localStorage.getItem("cinema-al-warsha-sessions") || "{}");
+          const roomId = routeRoom || activeRoom;
+          if (roomId && sessions[roomId]) {
+            document.documentElement.classList.add("resume-room");
+          }
+        } catch (error) {
+          document.documentElement.classList.remove("resume-room");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div class="site-shell">
@@ -24,11 +51,25 @@
       <div class="site-grid"></div>
 
       <main class="app-frame">
+        <section id="connectingScreen" class="screen">
+          <div class="connecting-layout">
+            <img src="./Logo.jpeg" alt="شعار سينما الورشة" class="connecting-logo" />
+            <div class="connecting-card panel">
+              <div class="cinema-loader" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <h2 class="connecting-title">جاري الإتصال بمقعدك!</h2>
+            </div>
+          </div>
+        </section>
+
         <section id="homeScreen" class="screen active">
           <div class="hero-layout">
-            <div class="brand-card panel">
+            <div class="brand-card">
               <img src="./Logo.jpeg" alt="شعار سينما الورشة" class="hero-logo" />
-              <h1 class="hero-title">سينما الورشة</h1>
+              <h1 class="hero-title sr-only">سينما الورشة</h1>
             </div>
 
             <div class="entry-card panel">
@@ -52,6 +93,10 @@
                   إنشاء غرفة السينما
                 </button>
               </form>
+
+              <button id="openJoinRoomButton" class="secondary-button join-room-button" type="button">
+                الإنضمام برقم الغرفة
+              </button>
             </div>
           </div>
         </section>
@@ -107,6 +152,15 @@
                   <span>LIVE</span>
                   <strong id="roomCodeBadge">0000</strong>
                 </div>
+
+                <div id="viewerCountPill" class="viewer-count-pill" aria-label="عدد الموجودين في الغرفة">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M12 5c4.8 0 8.4 3.4 9.7 6.2.2.5.2 1.1 0 1.6C20.4 15.6 16.8 19 12 19s-8.4-3.4-9.7-6.2a1.9 1.9 0 0 1 0-1.6C3.6 8.4 7.2 5 12 5Zm0 2C8.2 7 5.2 9.6 4.2 12c1 2.4 4 5 7.8 5s6.8-2.6 7.8-5c-1-2.4-4-5-7.8-5Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z"
+                    />
+                  </svg>
+                  <span id="viewerCountValue">0</span>
+                </div>
               </div>
 
               <div class="topbar-center">
@@ -131,15 +185,6 @@
                   <img id="profileAvatarSmall" class="profile-chip-avatar" alt="" />
                   <span id="profileNameSmall" class="profile-chip-name">ضيف</span>
                 </button>
-
-                <div id="viewerCountPill" class="viewer-count-pill" aria-label="عدد الموجودين في الغرفة">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M12 5c4.8 0 8.4 3.4 9.7 6.2.2.5.2 1.1 0 1.6C20.4 15.6 16.8 19 12 19s-8.4-3.4-9.7-6.2a1.9 1.9 0 0 1 0-1.6C3.6 8.4 7.2 5 12 5Zm0 2C8.2 7 5.2 9.6 4.2 12c1 2.4 4 5 7.8 5s6.8-2.6 7.8-5c-1-2.4-4-5-7.8-5Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z"
-                    />
-                  </svg>
-                  <span id="viewerCountValue">0</span>
-                </div>
               </div>
             </header>
 
@@ -352,6 +397,26 @@
         </div>
       </div>
     </aside>
+
+    <div id="joinRoomModal" class="modal hidden">
+      <div class="modal-card panel join-modal-card">
+        <button id="closeJoinRoomButton" class="drawer-close" type="button" aria-label="إغلاق">×</button>
+        <h3 class="modal-title">رقم الغرفة</h3>
+        <form id="joinRoomForm" class="join-room-form">
+          <input
+            id="joinRoomInput"
+            class="text-input room-number-input"
+            type="text"
+            inputmode="numeric"
+            maxlength="4"
+            placeholder="0000"
+            autocomplete="off"
+            aria-label="رقم الغرفة"
+          />
+          <button class="primary-button full-width" type="submit">انضمام</button>
+        </form>
+      </div>
+    </div>
 
     <div id="confirmModal" class="modal hidden">
       <div class="modal-card panel">

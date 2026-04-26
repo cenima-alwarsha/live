@@ -70,6 +70,7 @@ const ICONS = {
 };
 
 const dom = {
+  connectingScreen: document.getElementById("connectingScreen"),
   homeScreen: document.getElementById("homeScreen"),
   uploadScreen: document.getElementById("uploadScreen"),
   roomScreen: document.getElementById("roomScreen"),
@@ -79,6 +80,11 @@ const dom = {
   identityForm: document.getElementById("identityForm"),
   displayNameInput: document.getElementById("displayNameInput"),
   identitySubmitButton: document.getElementById("identitySubmitButton"),
+  openJoinRoomButton: document.getElementById("openJoinRoomButton"),
+  joinRoomModal: document.getElementById("joinRoomModal"),
+  joinRoomForm: document.getElementById("joinRoomForm"),
+  joinRoomInput: document.getElementById("joinRoomInput"),
+  closeJoinRoomButton: document.getElementById("closeJoinRoomButton"),
   movieFileInput: document.getElementById("movieFileInput"),
   uploadStatusCard: document.getElementById("uploadStatusCard"),
   uploadFileName: document.getElementById("uploadFileName"),
@@ -207,6 +213,11 @@ const state = {
   youtubeSearchTimer: null,
   youtubeSearchAbortController: null,
   youtubeSearchRequestId: 0,
+  youtubeSearchQuery: "",
+  youtubeSearchNextPageToken: "",
+  youtubeSearchLoading: false,
+  youtubeSearchHasMore: false,
+  youtubeSearchVideoIds: new Set(),
   movieSourceNode: null,
   movieMonitorConnected: false,
   hostMicTrack: null,
@@ -237,6 +248,7 @@ restorePrettyRoute();
 attachEvents();
 boot().catch((error) => {
   console.error(error);
+  switchScreen("home");
   showToast(getFriendlyErrorMessage(error));
 });
 
@@ -283,10 +295,15 @@ async function boot() {
 
 function attachEvents() {
   dom.identityForm.addEventListener("submit", handleIdentitySubmit);
+  dom.openJoinRoomButton.addEventListener("click", openJoinRoomModal);
+  dom.closeJoinRoomButton.addEventListener("click", closeJoinRoomModal);
+  dom.joinRoomForm.addEventListener("submit", handleJoinRoomSubmit);
+  dom.joinRoomInput.addEventListener("input", handleJoinRoomInput);
   dom.movieFileInput.addEventListener("change", handleMovieFileChange);
   dom.uploadBackButton.addEventListener("click", returnToRoomFromUpload);
   dom.youtubeForm.addEventListener("submit", handleYoutubeSubmit);
   dom.youtubeUrlInput.addEventListener("input", handleYoutubeInput);
+  dom.youtubeSearchResults.addEventListener("scroll", handleYoutubeResultsScroll);
   dom.hostMenuButton.addEventListener("click", toggleHostMenu);
   dom.copyRoomLinkButton.addEventListener("click", copyRoomLink);
   dom.profileButton.addEventListener("click", openDrawer);
@@ -390,6 +407,12 @@ function attachEvents() {
     if (!event.target.closest("#profileDrawer") && !event.target.closest("#profileButton")) {
       closeDrawer();
     }
+    if (
+      !dom.joinRoomModal.classList.contains("hidden") &&
+      event.target === dom.joinRoomModal
+    ) {
+      closeJoinRoomModal();
+    }
   });
 
   window.addEventListener("resize", positionProfileDrawer);
@@ -410,12 +433,66 @@ async function handleIdentitySubmit(event) {
 
   try {
     if (state.routeRoomId) {
+      switchScreen("connecting");
       await joinRoom(state.routeRoomId, name, getRoomSession(state.routeRoomId));
     } else {
       await createRoom(name);
     }
   } catch (error) {
     console.error(error);
+    switchScreen("home");
+    showToast(getFriendlyErrorMessage(error));
+  }
+}
+
+function openJoinRoomModal() {
+  dom.joinRoomInput.value = "";
+  dom.joinRoomModal.classList.remove("hidden");
+  window.setTimeout(() => dom.joinRoomInput.focus(), 0);
+}
+
+function closeJoinRoomModal() {
+  dom.joinRoomModal.classList.add("hidden");
+}
+
+function handleJoinRoomInput() {
+  dom.joinRoomInput.value = normalizeRoomCodeInput(dom.joinRoomInput.value);
+}
+
+async function handleJoinRoomSubmit(event) {
+  event.preventDefault();
+  const name = sanitizeName(dom.displayNameInput.value);
+  const roomId = normalizeRoomCodeInput(dom.joinRoomInput.value);
+
+  dom.joinRoomInput.value = roomId;
+
+  if (!name) {
+    closeJoinRoomModal();
+    showToast("اكتب اسمك أولاً.");
+    dom.displayNameInput.focus();
+    return;
+  }
+
+  if (!/^\d{4}$/.test(roomId)) {
+    showToast("اكتب رقم الغرفة من 4 أرقام.");
+    dom.joinRoomInput.focus();
+    return;
+  }
+
+  savePreferredName(name);
+  closeJoinRoomModal();
+  state.routeRoomId = roomId;
+  history.replaceState({}, "", buildRoomUrl(roomId));
+  switchScreen("connecting");
+
+  try {
+    await joinRoom(roomId, name, getRoomSession(roomId));
+  } catch (error) {
+    console.error(error);
+    state.routeRoomId = null;
+    history.replaceState({}, "", getBasePath());
+    updateHomeMode();
+    switchScreen("home");
     showToast(getFriendlyErrorMessage(error));
   }
 }
@@ -652,7 +729,9 @@ function updateHomeMode() {
 }
 
 function switchScreen(name) {
+  document.documentElement.classList.remove("resume-room");
   state.screen = name;
+  dom.connectingScreen.classList.toggle("active", name === "connecting");
   dom.homeScreen.classList.toggle("active", name === "home");
   dom.uploadScreen.classList.toggle("active", name === "upload");
   dom.roomScreen.classList.toggle("active", name === "room");
@@ -666,6 +745,7 @@ function switchScreen(name) {
     hideHostControls();
     dom.hostMenuPanel.classList.add("hidden");
     closeDrawer();
+    closeJoinRoomModal();
   }
 }
 
@@ -743,7 +823,7 @@ function handleYoutubeInput() {
   }
 
   if (value.length < 2) {
-    renderYoutubeSearchMessage("");
+    clearYoutubeSearchResults();
     return;
   }
 
@@ -813,46 +893,179 @@ async function searchYoutube(query) {
   const requestId = state.youtubeSearchRequestId + 1;
   state.youtubeSearchRequestId = requestId;
   state.youtubeSearchAbortController = new AbortController();
+  state.youtubeSearchQuery = text;
+  state.youtubeSearchNextPageToken = "";
+  state.youtubeSearchHasMore = false;
+  state.youtubeSearchLoading = true;
+  state.youtubeSearchVideoIds = new Set();
   renderYoutubeSearchMessage("جاري البحث...");
 
+  try {
+    const data = await fetchYoutubeSearchPage(text, "", state.youtubeSearchAbortController.signal);
+
+    if (requestId !== state.youtubeSearchRequestId) {
+      return;
+    }
+
+    const results = await hydrateYoutubeResults(data.items || [], state.youtubeSearchAbortController.signal);
+
+    if (requestId !== state.youtubeSearchRequestId) {
+      return;
+    }
+
+    state.youtubeSearchNextPageToken = data.nextPageToken || "";
+    state.youtubeSearchHasMore = Boolean(state.youtubeSearchNextPageToken);
+    renderYoutubeSearchResults(results);
+  } finally {
+    if (requestId === state.youtubeSearchRequestId) {
+      state.youtubeSearchLoading = false;
+      state.youtubeSearchAbortController = null;
+      removeYoutubeSearchLoading();
+    }
+  }
+}
+
+async function loadMoreYoutubeResults() {
+  const text = state.youtubeSearchQuery;
+  if (
+    !text ||
+    state.youtubeSearchLoading ||
+    !state.youtubeSearchHasMore ||
+    !state.youtubeSearchNextPageToken
+  ) {
+    return;
+  }
+
+  const requestId = state.youtubeSearchRequestId;
+  const pageToken = state.youtubeSearchNextPageToken;
+  const controller = new AbortController();
+  state.youtubeSearchAbortController = controller;
+  state.youtubeSearchLoading = true;
+  appendYoutubeSearchLoading();
+
+  try {
+    const data = await fetchYoutubeSearchPage(text, pageToken, controller.signal);
+
+    if (requestId !== state.youtubeSearchRequestId || text !== state.youtubeSearchQuery) {
+      return;
+    }
+
+    const results = await hydrateYoutubeResults(data.items || [], controller.signal);
+
+    if (requestId !== state.youtubeSearchRequestId || text !== state.youtubeSearchQuery) {
+      return;
+    }
+
+    state.youtubeSearchNextPageToken = data.nextPageToken || "";
+    state.youtubeSearchHasMore = Boolean(state.youtubeSearchNextPageToken);
+    renderYoutubeSearchResults(results, { append: true });
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      console.error("youtube load more error", error);
+      state.youtubeSearchHasMore = false;
+      appendYoutubeSearchMessage("تعذر تحميل المزيد.");
+    }
+  } finally {
+    if (requestId === state.youtubeSearchRequestId && text === state.youtubeSearchQuery) {
+      state.youtubeSearchLoading = false;
+      state.youtubeSearchAbortController = null;
+      removeYoutubeSearchLoading();
+    }
+  }
+}
+
+async function fetchYoutubeSearchPage(query, pageToken = "", signal) {
   const params = new URLSearchParams({
     part: "snippet",
     type: "video",
     videoEmbeddable: "true",
     maxResults: "8",
-    q: text,
+    q: query,
     key: YOUTUBE_SEARCH_API_KEY,
   });
+  if (pageToken) {
+    params.set("pageToken", pageToken);
+  }
 
   const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params}`, {
-    signal: state.youtubeSearchAbortController.signal,
+    signal,
   });
-
-  if (requestId !== state.youtubeSearchRequestId) {
-    return;
-  }
 
   if (!response.ok) {
     throw new Error("تعذر البحث في يوتيوب.");
   }
 
-  const data = await response.json();
-  const results = (data.items || [])
+  return response.json();
+}
+
+async function hydrateYoutubeResults(items, signal) {
+  const results = items
     .map((item) => ({
       videoId: item.id?.videoId || "",
       title: item.snippet?.title || "YouTube",
       channelTitle: item.snippet?.channelTitle || "",
       thumbnail: item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || "",
     }))
-    .filter((item) => item.videoId);
+    .filter((item) => item.videoId && !state.youtubeSearchVideoIds.has(item.videoId));
 
-  renderYoutubeSearchResults(results);
+  if (!results.length) {
+    return [];
+  }
+
+  const durations = await fetchYoutubeDurations(
+    results.map((item) => item.videoId),
+    signal
+  ).catch((error) => {
+    if (error.name !== "AbortError") {
+      console.warn("youtube durations error", error);
+    }
+    return new Map();
+  });
+
+  results.forEach((result) => {
+    state.youtubeSearchVideoIds.add(result.videoId);
+    result.duration = durations.get(result.videoId) || "";
+  });
+
+  return results;
 }
 
-function renderYoutubeSearchResults(results) {
-  dom.youtubeSearchResults.innerHTML = "";
+async function fetchYoutubeDurations(videoIds, signal) {
+  if (!videoIds.length) {
+    return new Map();
+  }
+
+  const params = new URLSearchParams({
+    part: "contentDetails",
+    id: videoIds.join(","),
+    key: YOUTUBE_SEARCH_API_KEY,
+  });
+
+  const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${params}`, { signal });
+  if (!response.ok) {
+    throw new Error("تعذر جلب مدة الفيديو.");
+  }
+
+  const data = await response.json();
+  return new Map(
+    (data.items || []).map((item) => [
+      item.id,
+      formatYoutubeDuration(item.contentDetails?.duration || ""),
+    ])
+  );
+}
+
+function renderYoutubeSearchResults(results, options = {}) {
+  const append = Boolean(options.append);
+  removeYoutubeSearchLoading();
+  if (!append) {
+    dom.youtubeSearchResults.innerHTML = "";
+  }
+
   if (!results.length) {
-    renderYoutubeSearchMessage("لا توجد نتائج.");
+    if (!append) {
+      renderYoutubeSearchMessage("لا توجد نتائج.");
+    }
     return;
   }
 
@@ -862,10 +1075,22 @@ function renderYoutubeSearchResults(results) {
     button.type = "button";
     button.addEventListener("click", () => selectYoutubeResult(result));
 
+    const thumbWrap = document.createElement("div");
+    thumbWrap.className = "youtube-result-thumb-wrap";
+
     const image = document.createElement("img");
     image.className = "youtube-result-thumb";
     image.src = result.thumbnail;
     image.alt = "";
+
+    thumbWrap.append(image);
+
+    if (result.duration) {
+      const duration = document.createElement("span");
+      duration.className = "youtube-result-duration";
+      duration.textContent = result.duration;
+      thumbWrap.append(duration);
+    }
 
     const textWrap = document.createElement("div");
     textWrap.className = "youtube-result-text";
@@ -879,7 +1104,7 @@ function renderYoutubeSearchResults(results) {
     channel.textContent = result.channelTitle;
 
     textWrap.append(title, channel);
-    button.append(image, textWrap);
+    button.append(thumbWrap, textWrap);
     dom.youtubeSearchResults.append(button);
   });
 
@@ -900,12 +1125,49 @@ function renderYoutubeSearchMessage(message) {
   dom.youtubeSearchResults.classList.remove("hidden");
 }
 
+function appendYoutubeSearchMessage(message) {
+  removeYoutubeSearchLoading();
+  if (!message) {
+    return;
+  }
+  const item = document.createElement("div");
+  item.className = "youtube-search-message";
+  item.textContent = message;
+  dom.youtubeSearchResults.append(item);
+  dom.youtubeSearchResults.classList.remove("hidden");
+}
+
+function appendYoutubeSearchLoading() {
+  removeYoutubeSearchLoading();
+  const item = document.createElement("div");
+  item.className = "youtube-search-message youtube-search-loader";
+  item.textContent = "جاري تحميل المزيد...";
+  dom.youtubeSearchResults.append(item);
+  dom.youtubeSearchResults.classList.remove("hidden");
+}
+
+function removeYoutubeSearchLoading() {
+  dom.youtubeSearchResults.querySelector(".youtube-search-loader")?.remove();
+}
+
 function clearYoutubeSearchResults() {
   clearTimeout(state.youtubeSearchTimer);
   state.youtubeSearchAbortController?.abort();
   state.youtubeSearchAbortController = null;
+  state.youtubeSearchQuery = "";
+  state.youtubeSearchNextPageToken = "";
+  state.youtubeSearchLoading = false;
+  state.youtubeSearchHasMore = false;
+  state.youtubeSearchVideoIds = new Set();
   dom.youtubeSearchResults.innerHTML = "";
   dom.youtubeSearchResults.classList.add("hidden");
+}
+
+function handleYoutubeResultsScroll() {
+  const { scrollTop, scrollHeight, clientHeight } = dom.youtubeSearchResults;
+  if (scrollHeight - (scrollTop + clientHeight) < 90) {
+    loadMoreYoutubeResults();
+  }
 }
 
 async function selectYoutubeResult(result) {
@@ -3018,20 +3280,22 @@ function restorePrettyRoute() {
 }
 
 function getRoomIdFromLocation() {
-  const queryRoom = new URLSearchParams(location.search).get("room");
+  const queryRoom = normalizeRoomCodeInput(new URLSearchParams(location.search).get("room"));
   if (queryRoom && /^\d{4}$/.test(queryRoom)) {
     return queryRoom;
   }
 
   const segments = location.pathname.split("/").filter(Boolean);
-  const last = segments.at(-1);
+  const last = normalizeRoomCodeInput(segments.at(-1));
   return /^\d{4}$/.test(last || "") ? last : null;
 }
 
 function getBasePath() {
   const segments = location.pathname.split("/").filter(Boolean);
   const last = segments.at(-1);
-  const baseSegments = /^\d{4}$/.test(last || "") ? segments.slice(0, -1) : segments;
+  const baseSegments = /^\d{4}$/.test(normalizeRoomCodeInput(last) || "")
+    ? segments.slice(0, -1)
+    : segments;
   const basePath = `/${baseSegments.join("/")}`;
   return basePath === "/" ? "/" : `${basePath}/`;
 }
@@ -3066,6 +3330,16 @@ async function generateUniqueRoomId() {
 
 function sanitizeName(value) {
   return (value || "").trim().replace(/\s+/g, " ").slice(0, 28);
+}
+
+function normalizeRoomCodeInput(value) {
+  return normalizeDigits(value).replace(/\D/g, "").slice(0, 4);
+}
+
+function normalizeDigits(value) {
+  return String(value || "")
+    .replace(/[٠-٩]/g, (digit) => `${digit.charCodeAt(0) - 0x0660}`)
+    .replace(/[۰-۹]/g, (digit) => `${digit.charCodeAt(0) - 0x06f0}`);
 }
 
 function truncateReplyText(value) {
@@ -3172,6 +3446,20 @@ function escapeXml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function formatYoutubeDuration(value) {
+  const match = String(value || "").match(
+    /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/
+  );
+  if (!match) {
+    return "";
+  }
+
+  const [, days = "0", hours = "0", minutes = "0", seconds = "0"] = match;
+  const totalSeconds =
+    Number(days) * 86400 + Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+  return totalSeconds > 0 ? formatDuration(totalSeconds) : "";
 }
 
 function formatDuration(totalSeconds) {
