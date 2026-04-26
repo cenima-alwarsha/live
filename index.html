@@ -60,6 +60,9 @@
           <div class="upload-layout panel">
             <div class="upload-header">
               <h2 class="section-title">تحميل الفيلم</h2>
+              <button id="uploadBackButton" class="secondary-button upload-back-button hidden" type="button">
+                رجوع
+              </button>
             </div>
 
             <label class="upload-dropzone" for="movieFileInput">
@@ -72,13 +75,14 @@
               <input
                 id="youtubeUrlInput"
                 class="text-input"
-                type="url"
-                placeholder="رابط يوتيوب"
+                type="search"
+                placeholder="رابط يوتيوب أو بحث"
                 autocomplete="off"
-                inputmode="url"
+                inputmode="search"
               />
-              <button id="youtubeSubmitButton" class="secondary-button" type="submit">يوتيوب</button>
+              <button id="youtubeSubmitButton" class="secondary-button" type="submit">تشغيل</button>
             </form>
+            <div id="youtubeSearchResults" class="youtube-search-results hidden"></div>
 
             <div id="uploadStatusCard" class="upload-status hidden">
               <div class="upload-meta">
@@ -250,6 +254,23 @@
                       </button>
                     </div>
                   </div>
+
+                  <button
+                    id="hostSkipBackwardButton"
+                    class="host-skip-button host-skip-back"
+                    type="button"
+                    aria-label="ترجيع 10 ثواني"
+                  >
+                    -10
+                  </button>
+                  <button
+                    id="hostSkipForwardButton"
+                    class="host-skip-button host-skip-forward"
+                    type="button"
+                    aria-label="تقديم 10 ثواني"
+                  >
+                    +10
+                  </button>
 
                   <input id="hostSeekBar" class="seek-bar" type="range" min="0" max="100" value="0" />
                 </div>

@@ -31,6 +31,7 @@ const SESSION_STORAGE_KEY = "cinema-al-warsha-sessions";
 const ACTIVE_ROOM_STORAGE_KEY = "cinema-al-warsha-active-room";
 const HOST_MEDIA_DB_NAME = "cinema-al-warsha-db";
 const HOST_MEDIA_STORE_NAME = "host-media";
+const YOUTUBE_SEARCH_API_KEY = firebaseConfig.apiKey;
 
 const RTC_CONFIGURATION = {
   iceServers: [
@@ -85,9 +86,11 @@ const dom = {
   uploadSpeedLabel: document.getElementById("uploadSpeedLabel"),
   uploadProgressBar: document.getElementById("uploadProgressBar"),
   uploadHint: document.getElementById("uploadHint"),
+  uploadBackButton: document.getElementById("uploadBackButton"),
   youtubeForm: document.getElementById("youtubeForm"),
   youtubeUrlInput: document.getElementById("youtubeUrlInput"),
   youtubeSubmitButton: document.getElementById("youtubeSubmitButton"),
+  youtubeSearchResults: document.getElementById("youtubeSearchResults"),
   roomCodeBadge: document.getElementById("roomCodeBadge"),
   livePill: document.getElementById("livePill"),
   hostMenuWrap: document.getElementById("hostMenuWrap"),
@@ -122,6 +125,8 @@ const dom = {
   hostMovieName: document.getElementById("hostMovieName"),
   hostTimeLabel: document.getElementById("hostTimeLabel"),
   hostPlayPauseButton: document.getElementById("hostPlayPauseButton"),
+  hostSkipBackwardButton: document.getElementById("hostSkipBackwardButton"),
+  hostSkipForwardButton: document.getElementById("hostSkipForwardButton"),
   hostFullscreenButton: document.getElementById("hostFullscreenButton"),
   replaceMovieButton: document.getElementById("replaceMovieButton"),
   hostSeekBar: document.getElementById("hostSeekBar"),
@@ -199,6 +204,9 @@ const state = {
   youtubeVideoId: "",
   youtubeSyncTimer: null,
   youtubeApplyingSync: false,
+  youtubeSearchTimer: null,
+  youtubeSearchAbortController: null,
+  youtubeSearchRequestId: 0,
   movieSourceNode: null,
   movieMonitorConnected: false,
   hostMicTrack: null,
@@ -276,7 +284,9 @@ async function boot() {
 function attachEvents() {
   dom.identityForm.addEventListener("submit", handleIdentitySubmit);
   dom.movieFileInput.addEventListener("change", handleMovieFileChange);
+  dom.uploadBackButton.addEventListener("click", returnToRoomFromUpload);
   dom.youtubeForm.addEventListener("submit", handleYoutubeSubmit);
+  dom.youtubeUrlInput.addEventListener("input", handleYoutubeInput);
   dom.hostMenuButton.addEventListener("click", toggleHostMenu);
   dom.copyRoomLinkButton.addEventListener("click", copyRoomLink);
   dom.profileButton.addEventListener("click", openDrawer);
@@ -291,12 +301,19 @@ function attachEvents() {
   dom.focusChatButton.addEventListener("click", focusChatComposer);
   dom.unlockPlaybackButton.addEventListener("click", attemptRemotePlayback);
   dom.replaceMovieButton.addEventListener("click", () => {
-    revealHostControls();
-    dom.movieFileInput.click();
+    openMediaChooser();
   });
   dom.hostPlayPauseButton.addEventListener("click", async () => {
     revealHostControls();
     await toggleHostPlayback();
+  });
+  dom.hostSkipBackwardButton.addEventListener("click", () => {
+    revealHostControls();
+    skipHostBy(-10);
+  });
+  dom.hostSkipForwardButton.addEventListener("click", () => {
+    revealHostControls();
+    skipHostBy(10);
   });
   dom.hostFullscreenButton.addEventListener("click", async () => {
     revealHostControls();
@@ -350,6 +367,13 @@ function attachEvents() {
     }
     if (state.isHost) {
       toggleHostControls();
+      return;
+    }
+    if (isYoutubeMode()) {
+      if (!dom.playUnlockOverlay.classList.contains("hidden")) {
+        attemptRemotePlayback();
+      }
+      toggleViewerControls();
       return;
     }
     attemptRemotePlayback();
@@ -632,6 +656,7 @@ function switchScreen(name) {
   dom.homeScreen.classList.toggle("active", name === "home");
   dom.uploadScreen.classList.toggle("active", name === "upload");
   dom.roomScreen.classList.toggle("active", name === "room");
+  syncUploadBackButton();
   if (name !== "room") {
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
@@ -676,6 +701,63 @@ function updateModeUi() {
   updateWaitingOverlay();
 }
 
+function openMediaChooser() {
+  if (!state.isHost) {
+    return;
+  }
+  hideHostControls();
+  dom.hostMenuPanel.classList.add("hidden");
+  resetUploadProgress();
+  switchScreen("upload");
+}
+
+function returnToRoomFromUpload() {
+  if (!state.roomId || !state.localPrepared) {
+    return;
+  }
+  switchScreen("room");
+  updateModeUi();
+  revealHostControls();
+}
+
+function syncUploadBackButton() {
+  dom.uploadBackButton.classList.toggle("hidden", !(state.isHost && state.localPrepared && state.roomId));
+}
+
+function resetUploadProgress() {
+  clearYoutubeSearchResults();
+  dom.uploadStatusCard.classList.add("hidden");
+  dom.uploadFileName.textContent = "جارٍ التحضير...";
+  dom.uploadProgressLabel.textContent = "0%";
+  dom.uploadSpeedLabel.textContent = "";
+  dom.uploadProgressBar.style.width = "0%";
+}
+
+function handleYoutubeInput() {
+  const value = dom.youtubeUrlInput.value.trim();
+  clearTimeout(state.youtubeSearchTimer);
+
+  if (!value || extractYoutubeId(value)) {
+    clearYoutubeSearchResults();
+    return;
+  }
+
+  if (value.length < 2) {
+    renderYoutubeSearchMessage("");
+    return;
+  }
+
+  state.youtubeSearchTimer = window.setTimeout(() => {
+    searchYoutube(value).catch((error) => {
+      if (error.name === "AbortError") {
+        return;
+      }
+      console.error("youtube search error", error);
+      renderYoutubeSearchMessage("تعذر البحث في يوتيوب.");
+    });
+  }, 450);
+}
+
 async function handleMovieFileChange(event) {
   const [file] = event.target.files || [];
   if (!file || !state.isHost) {
@@ -698,16 +780,139 @@ async function handleYoutubeSubmit(event) {
     return;
   }
 
-  const url = dom.youtubeUrlInput.value.trim();
-  const youtubeId = extractYoutubeId(url);
+  const value = dom.youtubeUrlInput.value.trim();
+  const youtubeId = extractYoutubeId(value);
   if (!youtubeId) {
-    showToast("ضع رابط يوتيوب صالح.");
-    dom.youtubeUrlInput.focus();
+    await searchYoutube(value).catch((error) => {
+      if (error.name === "AbortError") {
+        return;
+      }
+      console.error("youtube search error", error);
+      renderYoutubeSearchMessage("تعذر البحث في يوتيوب.");
+    });
+    showToast("اختر نتيجة من البحث.");
     return;
   }
 
   try {
-    await prepareYoutubeMovie(url, youtubeId);
+    await prepareYoutubeMovie(buildYoutubeWatchUrl(youtubeId), youtubeId);
+  } catch (error) {
+    console.error(error);
+    showToast(getFriendlyErrorMessage(error));
+  }
+}
+
+async function searchYoutube(query) {
+  const text = (query || "").trim();
+  if (!text || extractYoutubeId(text)) {
+    clearYoutubeSearchResults();
+    return;
+  }
+
+  state.youtubeSearchAbortController?.abort();
+  const requestId = state.youtubeSearchRequestId + 1;
+  state.youtubeSearchRequestId = requestId;
+  state.youtubeSearchAbortController = new AbortController();
+  renderYoutubeSearchMessage("جاري البحث...");
+
+  const params = new URLSearchParams({
+    part: "snippet",
+    type: "video",
+    videoEmbeddable: "true",
+    maxResults: "8",
+    q: text,
+    key: YOUTUBE_SEARCH_API_KEY,
+  });
+
+  const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params}`, {
+    signal: state.youtubeSearchAbortController.signal,
+  });
+
+  if (requestId !== state.youtubeSearchRequestId) {
+    return;
+  }
+
+  if (!response.ok) {
+    throw new Error("تعذر البحث في يوتيوب.");
+  }
+
+  const data = await response.json();
+  const results = (data.items || [])
+    .map((item) => ({
+      videoId: item.id?.videoId || "",
+      title: item.snippet?.title || "YouTube",
+      channelTitle: item.snippet?.channelTitle || "",
+      thumbnail: item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || "",
+    }))
+    .filter((item) => item.videoId);
+
+  renderYoutubeSearchResults(results);
+}
+
+function renderYoutubeSearchResults(results) {
+  dom.youtubeSearchResults.innerHTML = "";
+  if (!results.length) {
+    renderYoutubeSearchMessage("لا توجد نتائج.");
+    return;
+  }
+
+  results.forEach((result) => {
+    const button = document.createElement("button");
+    button.className = "youtube-result-item";
+    button.type = "button";
+    button.addEventListener("click", () => selectYoutubeResult(result));
+
+    const image = document.createElement("img");
+    image.className = "youtube-result-thumb";
+    image.src = result.thumbnail;
+    image.alt = "";
+
+    const textWrap = document.createElement("div");
+    textWrap.className = "youtube-result-text";
+
+    const title = document.createElement("div");
+    title.className = "youtube-result-title";
+    title.textContent = result.title;
+
+    const channel = document.createElement("div");
+    channel.className = "youtube-result-channel";
+    channel.textContent = result.channelTitle;
+
+    textWrap.append(title, channel);
+    button.append(image, textWrap);
+    dom.youtubeSearchResults.append(button);
+  });
+
+  dom.youtubeSearchResults.classList.remove("hidden");
+}
+
+function renderYoutubeSearchMessage(message) {
+  dom.youtubeSearchResults.innerHTML = "";
+  if (!message) {
+    dom.youtubeSearchResults.classList.add("hidden");
+    return;
+  }
+
+  const item = document.createElement("div");
+  item.className = "youtube-search-message";
+  item.textContent = message;
+  dom.youtubeSearchResults.append(item);
+  dom.youtubeSearchResults.classList.remove("hidden");
+}
+
+function clearYoutubeSearchResults() {
+  clearTimeout(state.youtubeSearchTimer);
+  state.youtubeSearchAbortController?.abort();
+  state.youtubeSearchAbortController = null;
+  dom.youtubeSearchResults.innerHTML = "";
+  dom.youtubeSearchResults.classList.add("hidden");
+}
+
+async function selectYoutubeResult(result) {
+  dom.youtubeUrlInput.value = result.title;
+  clearYoutubeSearchResults();
+  try {
+    await prepareYoutubeMovie(buildYoutubeWatchUrl(result.videoId), result.videoId);
   } catch (error) {
     console.error(error);
     showToast(getFriendlyErrorMessage(error));
@@ -771,6 +976,7 @@ async function prepareYoutubeMovie(url, youtubeId) {
   cleanupViewerReconnect();
   resetHostMovieState();
   closeAllPeers();
+  clearYoutubeSearchResults();
 
   setUploadProgress(30, "YouTube", "تجهيز الرابط");
 
@@ -1340,6 +1546,11 @@ function getProjectedSyncTime(sync, duration = 0) {
   return duration ? Math.min(projected, Math.max(duration - 0.2, 0)) : projected;
 }
 
+function clampTime(value, duration = 0) {
+  const upper = duration ? Math.max(duration - 0.2, 0) : Number.MAX_SAFE_INTEGER;
+  return Math.min(Math.max(value, 0), upper);
+}
+
 function getYoutubeCurrentTime() {
   const time = state.youtubePlayer?.getCurrentTime?.();
   return Number.isFinite(time) ? time : state.roomData?.sync?.currentTime || 0;
@@ -1468,6 +1679,26 @@ function handleHostSeek() {
     return;
   }
   dom.hostVideo.currentTime = (Number(dom.hostSeekBar.value) / 100) * duration;
+}
+
+function skipHostBy(seconds) {
+  if (!state.isHost || !state.localPrepared) {
+    return;
+  }
+
+  if (isYoutubeMode()) {
+    const duration = getYoutubeDuration();
+    const nextTime = clampTime(getYoutubeCurrentTime() + seconds, duration);
+    state.youtubePlayer?.seekTo?.(nextTime, true);
+    updateHostPlaybackUi();
+    syncHostPlayback(true);
+    return;
+  }
+
+  const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : state.hostMedia.duration || 0;
+  dom.hostVideo.currentTime = clampTime((dom.hostVideo.currentTime || 0) + seconds, duration);
+  updateHostPlaybackUi();
+  syncHostPlayback(true);
 }
 
 async function toggleHostPlayback() {
@@ -2694,7 +2925,7 @@ function syncViewerExpandState() {
 
 async function attemptRemotePlayback() {
   if (isYoutubeMode()) {
-    await applyYoutubeSync(state.roomData?.sync, true);
+    await applyYoutubeSync(state.roomData?.sync, false);
     dom.playUnlockOverlay.classList.add("hidden");
     return;
   }
@@ -2873,6 +3104,10 @@ function extractYoutubeId(value) {
 function normalizeYoutubeId(value) {
   const id = (value || "").trim();
   return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
+}
+
+function buildYoutubeWatchUrl(videoId) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
 function syncRenameSaveVisibility() {
