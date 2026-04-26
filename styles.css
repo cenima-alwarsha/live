@@ -1651,9 +1651,13 @@ body.theater-mode .media-shell {
 }
 
 @media (min-width: 981px) {
+  .app-frame {
+    width: min(1500px, calc(100% - 56px));
+  }
+
   .room-layout {
     direction: ltr;
-    grid-template-columns: minmax(0, 1fr) minmax(340px, 410px);
+    grid-template-columns: minmax(0, 1fr) minmax(390px, 460px);
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas:
       "stage controls"
@@ -1691,35 +1695,69 @@ body.theater-mode .media-shell {
     grid-area: controls;
     position: static;
     display: grid;
-    grid-template-columns: 1fr;
+    direction: ltr;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
     justify-items: stretch;
-    gap: 10px;
-    padding: 14px;
+    gap: 8px;
+    padding: 12px;
   }
 
   .topbar-center {
-    order: 1;
+    grid-column: 2;
+    grid-row: 1;
+    direction: rtl;
     justify-content: center;
   }
 
   .topbar-side-start {
-    order: 2;
-    justify-content: center;
-    flex-wrap: wrap;
+    grid-column: 1;
+    grid-row: 1;
+    direction: rtl;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
   }
 
   .topbar-side-end {
-    order: 3;
-    justify-content: center;
-    flex-wrap: wrap;
+    grid-column: 3;
+    grid-row: 1;
+    direction: rtl;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
   }
 
   .topbar-logo {
-    width: 48px;
+    width: 42px;
+  }
+
+  .topbar .live-pill {
+    padding: 7px 10px;
+    font-size: 0.84rem;
+  }
+
+  .topbar .viewer-count-pill {
+    min-height: 36px;
+    padding: 6px 9px;
+    font-size: 0.84rem;
+  }
+
+  .topbar .icon-button {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+  }
+
+  .topbar .profile-chip {
+    padding: 3px 6px 3px 9px;
+  }
+
+  .topbar .profile-chip-avatar {
+    width: 30px;
+    height: 30px;
   }
 
   .profile-chip-name {
-    max-width: 190px;
+    max-width: 118px;
   }
 
   .floating-menu {
