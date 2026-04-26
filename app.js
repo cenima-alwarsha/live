@@ -340,7 +340,7 @@ function attachEvents() {
     revealHostControls();
     handleHostSeek();
   });
-  document.addEventListener("fullscreenchange", syncViewerExpandState);
+  document.addEventListener("fullscreenchange", handleFullscreenChange);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   dom.hostVideo.addEventListener("loadedmetadata", () => {
@@ -545,7 +545,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   const memberId = existingSession?.memberId || createClientId();
   const isHost = roomData.creatorId === memberId;
   const name = sanitizeName(existingSession?.name || preferredName);
-  const avatar = existingSession?.avatar || createAvatar(memberId, name);
+  const avatar = createAvatar(memberId, name);
 
   const session = {
     roomId,
@@ -741,6 +741,7 @@ function switchScreen(name) {
       document.exitFullscreen().catch(() => {});
     }
     setTheaterMode(false);
+    unlockLandscapeMode();
     dom.viewerControls.classList.add("hidden");
     hideHostControls();
     dom.hostMenuPanel.classList.add("hidden");
@@ -3149,24 +3150,29 @@ async function toggleViewerFullscreen() {
 async function toggleMediaFullscreen() {
   if (document.fullscreenElement) {
     await document.exitFullscreen().catch(() => {});
+    unlockLandscapeMode();
     syncViewerExpandState();
     return;
   }
 
   if (document.body.classList.contains("theater-mode")) {
     setTheaterMode(false);
+    unlockLandscapeMode();
     revealViewerControls();
     return;
   }
 
   if (typeof dom.mediaShell.requestFullscreen === "function") {
     try {
-      await dom.mediaShell.requestFullscreen();
+      await dom.mediaShell.requestFullscreen({ navigationUI: "hide" });
+      await lockLandscapeMode();
     } catch (error) {
       setTheaterMode(true);
+      await lockLandscapeMode();
     }
   } else {
     setTheaterMode(true);
+    await lockLandscapeMode();
   }
 
   syncViewerExpandState();
@@ -3175,6 +3181,24 @@ async function toggleMediaFullscreen() {
 function setTheaterMode(enabled) {
   document.body.classList.toggle("theater-mode", enabled && state.screen === "room");
   syncViewerExpandState();
+}
+
+function handleFullscreenChange() {
+  if (!document.fullscreenElement && !document.body.classList.contains("theater-mode")) {
+    unlockLandscapeMode();
+  }
+  syncViewerExpandState();
+}
+
+async function lockLandscapeMode() {
+  if (!screen.orientation?.lock) {
+    return;
+  }
+  await screen.orientation.lock("landscape").catch(() => {});
+}
+
+function unlockLandscapeMode() {
+  screen.orientation?.unlock?.();
 }
 
 function syncViewerExpandState() {
@@ -3394,16 +3418,45 @@ function createClientId() {
 }
 
 function createAvatar(seed, name) {
-  const pairs = [
-    ["#12355d", "#d6b56a"],
-    ["#0f2747", "#f2d388"],
-    ["#1e4b7a", "#b98937"],
-    ["#183053", "#e6c98e"],
-    ["#0d1c31", "#cfa353"],
+  const presets = [
+    ["#10243f", "#d6b56a", "#f0bd92", "#1d1b24", "#d6b56a", "#fff1c7", "wave", "glasses"],
+    ["#0c1830", "#2f6f9f", "#8d563b", "#10131a", "#4ea7c8", "#f7dc91", "short", "film"],
+    ["#173b63", "#e0b15c", "#d7a073", "#2a1720", "#e07a5f", "#ffe6ad", "curly", "star"],
+    ["#07101d", "#6aa0b8", "#f2c7a1", "#3a2618", "#7db46c", "#f0d895", "cap", "none"],
+    ["#1b263b", "#caa04d", "#b87955", "#0d0f16", "#8e6ad8", "#fff6d7", "bun", "shades"],
+    ["#0e2a47", "#70a288", "#e3ad83", "#512e2e", "#d6b56a", "#f8f1df", "side", "moustache"],
+    ["#071626", "#b98937", "#f5caa8", "#202030", "#2f80ed", "#f2d388", "flat", "camera"],
+    ["#18202f", "#e6c98e", "#96614a", "#17141d", "#e76f51", "#ffead1", "hood", "headphones"],
+    ["#0b1e34", "#5d8aa8", "#f1b88e", "#241528", "#48a9a6", "#ffe7a6", "wave", "sparkle"],
+    ["#1a2f4d", "#d98f45", "#ca8b63", "#1b1d28", "#f4a261", "#fff0c1", "curly", "bow"],
+    ["#11263d", "#a3be8c", "#edc4a5", "#343434", "#88c0d0", "#f8f1df", "short", "crown"],
+    ["#061421", "#d6b56a", "#b66f4f", "#211821", "#b56576", "#ffe9b8", "bun", "moon"],
+    ["#15324f", "#77a6b6", "#f0b690", "#16151a", "#6d597a", "#fff2cc", "cap", "badge"],
+    ["#0a1729", "#c08457", "#9f6449", "#2e1d1d", "#355070", "#f6d186", "side", "glasses"],
+    ["#122c49", "#d6b56a", "#f7d0ad", "#211d2b", "#588157", "#fff5dc", "flat", "film"],
+    ["#0d1b2e", "#e5989b", "#c8845c", "#171821", "#d6b56a", "#ffe8a3", "hood", "star"],
+    ["#14213d", "#fca311", "#e8b894", "#332214", "#457b9d", "#f8f1df", "wave", "headphones"],
+    ["#1d3557", "#a8dadc", "#8c5a42", "#161b22", "#e63946", "#f1faee", "short", "camera"],
+    ["#0b132b", "#5bc0be", "#f1c6a8", "#3d2c2e", "#9b5de5", "#fff1c7", "curly", "sparkle"],
+    ["#22333b", "#eae0d5", "#ba7f5a", "#1f2933", "#c6ac8f", "#ffe6ad", "cap", "moustache"],
+    ["#081c15", "#95d5b2", "#edc4a5", "#2b2118", "#52b788", "#f8f1df", "bun", "bow"],
+    ["#240046", "#ffb703", "#d79a72", "#190f17", "#fb8500", "#fff2c6", "side", "crown"],
+    ["#001d3d", "#ffc300", "#f0bd92", "#111827", "#003566", "#f8f1df", "flat", "moon"],
+    ["#2b2d42", "#8d99ae", "#a86f50", "#1c1c24", "#ef233c", "#edf2f4", "hood", "badge"],
+    ["#132a13", "#d6b56a", "#f4c2a0", "#2f1b12", "#90a955", "#fff4cf", "wave", "shades"],
+    ["#111827", "#60a5fa", "#c78b63", "#0f172a", "#38bdf8", "#f8f1df", "short", "star"],
+    ["#3a0ca3", "#f72585", "#efb892", "#241126", "#4cc9f0", "#ffe8a3", "curly", "glasses"],
+    ["#0f172a", "#d6b56a", "#9f6449", "#18181b", "#f59e0b", "#fff7d6", "cap", "film"],
   ];
-  const hash = hashString(seed);
-  const [start, end] = pairs[Math.abs(hash) % pairs.length];
+  const hash = hashString(`${seed}:${name}`) >>> 0;
+  const [start, end, skin, hair, shirt, accent, hairStyle, accessory] = presets[hash % presets.length];
   const initials = getInitials(name);
+  const tilt = (hash % 9) - 4;
+  const eyeOffset = hash % 3;
+  const bgDotA = 18 + (hash % 26);
+  const bgDotB = 92 - (hash % 20);
+  const hairMarkup = getAvatarHair(hairStyle, hair, accent);
+  const accessoryMarkup = getAvatarAccessory(accessory, hair, accent);
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
       <defs>
@@ -3411,15 +3464,90 @@ function createAvatar(seed, name) {
           <stop offset="0%" stop-color="${start}" />
           <stop offset="100%" stop-color="${end}" />
         </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#000" flood-opacity=".22"/>
+        </filter>
       </defs>
       <rect width="120" height="120" rx="60" fill="url(#g)" />
-      <circle cx="60" cy="48" r="24" fill="rgba(255,255,255,0.18)" />
-      <path d="M22 101c6-19 21-29 38-29s32 10 38 29" fill="rgba(255,255,255,0.18)" />
-      <text x="60" y="72" text-anchor="middle" dominant-baseline="middle" fill="#fff7e3"
-        font-family="Tajawal, sans-serif" font-size="34" font-weight="800">${escapeXml(initials)}</text>
+      <circle cx="${bgDotA}" cy="24" r="18" fill="#fff" opacity=".08" />
+      <circle cx="${bgDotB}" cy="95" r="24" fill="#fff" opacity=".07" />
+      <path d="M19 112c7-24 23-36 41-36s34 12 41 36" fill="${shirt}" opacity=".96" filter="url(#shadow)" />
+      <path d="M31 96c8 8 18 12 29 12s21-4 29-12" fill="none" stroke="${accent}" stroke-width="4" stroke-linecap="round" opacity=".75" />
+      <g transform="rotate(${tilt} 60 58)" filter="url(#shadow)">
+        ${hairMarkup.back}
+        <circle cx="60" cy="52" r="25" fill="${skin}" />
+        ${hairMarkup.front}
+        <circle cx="${50 - eyeOffset}" cy="55" r="3.2" fill="#17131a" />
+        <circle cx="${70 + eyeOffset}" cy="55" r="3.2" fill="#17131a" />
+        <path d="M60 58c-2 5-2 7 3 7" fill="none" stroke="#8f5d46" stroke-width="2.2" stroke-linecap="round" opacity=".55" />
+        <path d="M50 71c6 6 14 6 20 0" fill="none" stroke="#5c2f2f" stroke-width="3" stroke-linecap="round" />
+        <circle cx="43" cy="64" r="4" fill="#ef8f8f" opacity=".24" />
+        <circle cx="77" cy="64" r="4" fill="#ef8f8f" opacity=".24" />
+        ${accessoryMarkup}
+      </g>
+      <circle cx="86" cy="88" r="18" fill="rgba(4,9,16,.48)" stroke="${accent}" stroke-width="2" />
+      <text x="86" y="90" text-anchor="middle" dominant-baseline="middle" fill="#fff7e3"
+        font-family="Tajawal, sans-serif" font-size="18" font-weight="800">${escapeXml(initials)}</text>
     </svg>
   `;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function getAvatarHair(type, color, accent) {
+  const styles = {
+    wave: {
+      back: `<path d="M34 54c-3-22 12-35 29-34 18 1 28 14 24 35-12-10-32-18-53-1Z" fill="${color}" />`,
+      front: `<path d="M35 47c9-18 31-22 49-6-12 2-23-1-33-8-3 9-9 14-16 14Z" fill="${color}" />`,
+    },
+    short: {
+      back: `<path d="M35 49c1-19 12-29 29-29 15 1 25 10 26 27-18-8-37-8-55 2Z" fill="${color}" />`,
+      front: `<path d="M36 46c10-8 21-12 34-11 8 1 14 4 19 9-17 2-34 2-53 2Z" fill="${color}" />`,
+    },
+    curly: {
+      back: `<g fill="${color}"><circle cx="39" cy="42" r="11"/><circle cx="51" cy="31" r="12"/><circle cx="65" cy="30" r="12"/><circle cx="80" cy="42" r="11"/><circle cx="35" cy="55" r="9"/><circle cx="86" cy="55" r="9"/></g>`,
+      front: `<g fill="${color}"><circle cx="45" cy="42" r="8"/><circle cx="58" cy="37" r="9"/><circle cx="72" cy="41" r="8"/></g>`,
+    },
+    cap: {
+      back: `<path d="M36 47c2-16 12-25 27-25 14 0 24 8 27 23H36Z" fill="${color}" />`,
+      front: `<path d="M32 46h56c5 0 9 3 11 8H43c-7 0-10-3-11-8Z" fill="${accent}" />`,
+    },
+    bun: {
+      back: `<g fill="${color}"><circle cx="33" cy="51" r="11"/><circle cx="87" cy="51" r="11"/><path d="M36 49c1-18 11-29 25-29s24 11 24 29H36Z"/></g>`,
+      front: `<path d="M38 45c12-8 28-12 45-2-13 2-28 3-45 2Z" fill="${color}" />`,
+    },
+    side: {
+      back: `<path d="M35 52c-2-19 10-32 27-33 19-1 31 11 29 31-19-13-37-12-56 2Z" fill="${color}" />`,
+      front: `<path d="M34 48c18-19 40-22 57-4-19-2-35 2-49 12-5-1-7-3-8-8Z" fill="${color}" />`,
+    },
+    flat: {
+      back: `<path d="M36 48c2-18 12-27 27-27 15 0 25 9 27 27H36Z" fill="${color}" />`,
+      front: `<path d="M35 46h54v9c-15-5-33-5-54 0v-9Z" fill="${color}" />`,
+    },
+    hood: {
+      back: `<path d="M31 59c0-25 12-42 30-42s30 17 30 42c-14-18-46-18-60 0Z" fill="${color}" />`,
+      front: `<path d="M35 52c6-18 16-27 26-27s20 9 26 27c-16-10-36-10-52 0Z" fill="${accent}" opacity=".55" />`,
+    },
+  };
+  return styles[type] || styles.wave;
+}
+
+function getAvatarAccessory(type, color, accent) {
+  const accessories = {
+    none: "",
+    glasses: `<g fill="none" stroke="${accent}" stroke-width="3"><circle cx="50" cy="55" r="7"/><circle cx="70" cy="55" r="7"/><path d="M57 55h6"/></g>`,
+    shades: `<g fill="#111827" opacity=".88"><path d="M42 51h16l-2 10H45l-3-10Z"/><path d="M62 51h16l-3 10H64l-2-10Z"/></g><path d="M57 55h6" stroke="${color}" stroke-width="2"/>`,
+    film: `<g transform="translate(74 34) rotate(12)"><rect width="18" height="14" rx="3" fill="${accent}"/><circle cx="4" cy="4" r="1.5" fill="${color}"/><circle cx="14" cy="4" r="1.5" fill="${color}"/><circle cx="4" cy="10" r="1.5" fill="${color}"/><circle cx="14" cy="10" r="1.5" fill="${color}"/></g>`,
+    star: `<path d="M82 31l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7Z" fill="${accent}" />`,
+    camera: `<g transform="translate(74 35)"><rect x="0" y="4" width="21" height="15" rx="4" fill="${accent}"/><path d="M15 8l8-5v17l-8-5V8Z" fill="${color}"/><circle cx="9" cy="11.5" r="4" fill="${color}" opacity=".75"/></g>`,
+    headphones: `<path d="M36 57c0-18 10-30 24-30s24 12 24 30" fill="none" stroke="${accent}" stroke-width="5" stroke-linecap="round"/><rect x="31" y="54" width="9" height="17" rx="4" fill="${accent}"/><rect x="80" y="54" width="9" height="17" rx="4" fill="${accent}"/>`,
+    sparkle: `<g fill="${accent}"><path d="M83 32l2 6 6 2-6 2-2 6-2-6-6-2 6-2 2-6Z"/><circle cx="35" cy="36" r="3"/></g>`,
+    bow: `<g transform="translate(50 78)"><path d="M10 4C4-2 0 0 0 6s4 8 10 2V4Z" fill="${accent}"/><path d="M10 4c6-6 10-4 10 2s-4 8-10 2V4Z" fill="${accent}"/><circle cx="10" cy="6" r="3" fill="${color}"/></g>`,
+    crown: `<path d="M43 30l8 8 9-12 9 12 8-8 3 18H40l3-18Z" fill="${accent}" />`,
+    moon: `<path d="M84 32c-8 3-11 13-5 20-10-1-16-12-11-21 3-6 10-9 16-7-3 2-5 5-5 8 1 0 3 0 5 0Z" fill="${accent}" />`,
+    badge: `<g transform="translate(75 34)"><circle cx="9" cy="9" r="9" fill="${accent}"/><path d="M9 3l2 4 4 .5-3 3 .7 4.5L9 13l-3.7 2 .7-4.5-3-3L7 7l2-4Z" fill="${color}"/></g>`,
+    moustache: `<path d="M50 66c5-5 9-5 10 0 1-5 5-5 10 0-7 4-13 4-20 0Z" fill="${color}" />`,
+  };
+  return accessories[type] || "";
 }
 
 function getInitials(name) {

@@ -7,6 +7,28 @@
       name="description"
       content="سينما الورشة: غرف مشاهدة مباشرة بتصميم فاخر، شات حي، ومزامنة كاملة للفيلم داخل المتصفح."
     />
+    <meta property="og:locale" content="ar_KW" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="سينما الورشة" />
+    <meta property="og:title" content="سينما الورشة" />
+    <meta
+      property="og:description"
+      content="غرف مشاهدة مباشرة، دردشة حية، ومزامنة للفيلم داخل المتصفح."
+    />
+    <meta property="og:url" content="https://cenima-alwarsha.github.io/live/" />
+    <meta property="og:image" content="https://cenima-alwarsha.github.io/live/og-image.jpg" />
+    <meta property="og:image:secure_url" content="https://cenima-alwarsha.github.io/live/og-image.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="شعار سينما الورشة" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="سينما الورشة" />
+    <meta
+      name="twitter:description"
+      content="غرف مشاهدة مباشرة، دردشة حية، ومزامنة للفيلم داخل المتصفح."
+    />
+    <meta name="twitter:image" content="https://cenima-alwarsha.github.io/live/og-image.jpg" />
     <title>سينما الورشة</title>
     <link rel="icon" href="./Logo.jpeg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -110,21 +132,29 @@
               </button>
             </div>
 
-            <label class="upload-dropzone" for="movieFileInput">
+            <label class="upload-dropzone upload-video-button" for="movieFileInput">
               <input id="movieFileInput" type="file" accept="video/*,.mkv,.mp4,.mov,.webm" hidden />
               <span class="upload-icon">+</span>
-              <span class="upload-title">تحميل الفيلم</span>
+              <span class="upload-title">تحميل فيديو</span>
             </label>
 
             <form id="youtubeForm" class="youtube-form">
-              <input
-                id="youtubeUrlInput"
-                class="text-input"
-                type="search"
-                placeholder="رابط يوتيوب أو بحث"
-                autocomplete="off"
-                inputmode="search"
-              />
+              <div class="youtube-input-wrap">
+                <span class="youtube-logo" aria-hidden="true">
+                  <svg viewBox="0 0 28 20">
+                    <path d="M27.4 3.1A3.5 3.5 0 0 0 25 .7C22.8 0 14 0 14 0S5.2 0 3 .7A3.5 3.5 0 0 0 .6 3.1 36.4 36.4 0 0 0 0 10c0 2.3.2 4.6.6 6.9A3.5 3.5 0 0 0 3 19.3c2.2.7 11 .7 11 .7s8.8 0 11-.7a3.5 3.5 0 0 0 2.4-2.4c.4-2.3.6-4.6.6-6.9 0-2.3-.2-4.6-.6-6.9Z" />
+                    <path class="youtube-play" d="M11.2 14.2V5.8L18.5 10l-7.3 4.2Z" />
+                  </svg>
+                </span>
+                <input
+                  id="youtubeUrlInput"
+                  class="text-input"
+                  type="search"
+                  placeholder="بحث أو لصق رابط يوتيوب"
+                  autocomplete="off"
+                  inputmode="search"
+                />
+              </div>
               <button id="youtubeSubmitButton" class="secondary-button" type="submit">تشغيل</button>
             </form>
             <div id="youtubeSearchResults" class="youtube-search-results hidden"></div>
@@ -271,7 +301,7 @@
                       >
                         <svg viewBox="0 0 24 24" aria-hidden="true">
                           <path
-                            d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l1.5 1.7c.2.2.4.3.7.3h5.3A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Zm4.8 7.6L11 13l2.2 2.1 3.3-3.1 1.5 1.6-4.8 4.5-2.2-2.1-2.2 2.1-1.5-1.6 1.5-1.4Z"
+                            d="M4.5 7.5A2.5 2.5 0 0 1 7 5h7a2.5 2.5 0 0 1 2.5 2.5v1.1l2.6-1.9c.8-.6 1.9 0 1.9 1v8.6c0 1-1.1 1.6-1.9 1l-2.6-1.9v1.1A2.5 2.5 0 0 1 14 19H7a2.5 2.5 0 0 1-2.5-2.5v-9Z"
                           />
                         </svg>
                       </button>

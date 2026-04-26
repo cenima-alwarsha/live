@@ -475,6 +475,21 @@ html.resume-room #connectingScreen {
   padding: 24px;
 }
 
+.upload-video-button {
+  width: fit-content;
+  min-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  grid-auto-flow: column;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 10px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .upload-icon {
   width: 74px;
   height: 74px;
@@ -486,9 +501,22 @@ html.resume-room #connectingScreen {
   color: var(--gold);
 }
 
+.upload-video-button .upload-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 13px;
+  font-size: 1.35rem;
+}
+
 .upload-title {
   font-family: "Changa", sans-serif;
   font-size: 1.8rem;
+}
+
+.upload-video-button .upload-title {
+  font-family: "Tajawal", sans-serif;
+  font-size: 1rem;
+  font-weight: 800;
 }
 
 .youtube-form {
@@ -498,8 +526,36 @@ html.resume-room #connectingScreen {
   margin-top: 12px;
 }
 
-.youtube-form .text-input {
+.youtube-input-wrap {
+  position: relative;
+  flex: 1 1 auto;
   min-width: 0;
+}
+
+.youtube-input-wrap .text-input {
+  padding-inline-start: 54px;
+}
+
+.youtube-logo {
+  position: absolute;
+  inset-inline-start: 16px;
+  top: 50%;
+  width: 26px;
+  height: 20px;
+  transform: translateY(-50%);
+  color: #ff0033;
+  pointer-events: none;
+}
+
+.youtube-logo svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  fill: currentColor;
+}
+
+.youtube-logo .youtube-play {
+  fill: #fff;
 }
 
 .youtube-form .secondary-button {
@@ -956,10 +1012,7 @@ html.resume-room #connectingScreen {
 .host-controls {
   position: absolute;
   inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
+  display: block;
   padding: 12px;
   background:
     linear-gradient(180deg, rgba(0, 0, 0, 0.52), transparent 26%),
@@ -1006,6 +1059,10 @@ html.resume-room #connectingScreen {
 }
 
 .seek-bar {
+  position: absolute;
+  inset-inline: 14px;
+  bottom: 14px;
+  width: calc(100% - 28px);
   padding: 0;
   appearance: none;
   height: 5px;
@@ -1037,6 +1094,30 @@ html.resume-room #connectingScreen {
   color: var(--gold);
 }
 
+#hostPlayPauseButton {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 8;
+  width: 62px;
+  height: 62px;
+  border-radius: 22px;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(135deg, rgba(214, 181, 106, 0.34), rgba(244, 220, 160, 0.22));
+}
+
+#hostPlayPauseButton svg {
+  width: 24px;
+  height: 24px;
+}
+
+#hostFullscreenButton {
+  position: absolute;
+  left: 14px;
+  bottom: 34px;
+  z-index: 8;
+}
+
 .host-movie-name {
   max-width: min(58vw, 360px);
   overflow: hidden;
@@ -1046,7 +1127,17 @@ html.resume-room #connectingScreen {
 }
 
 .host-time-label {
+  position: absolute;
+  right: 14px;
+  bottom: 35px;
+  z-index: 8;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(4, 9, 16, 0.7);
+  border: 1px solid rgba(214, 181, 106, 0.14);
+  backdrop-filter: blur(14px);
   font-size: 0.84rem;
+  font-weight: 800;
 }
 
 .host-reload-notice {
@@ -1514,6 +1605,90 @@ body.theater-mode .media-shell {
   border: 0;
 }
 
+@media (min-width: 981px) {
+  .room-layout {
+    direction: ltr;
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 410px);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "stage controls"
+      "stage chat";
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .stage-panel,
+  .topbar,
+  .chat-panel {
+    direction: rtl;
+  }
+
+  .stage-panel {
+    grid-area: stage;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .stage-panel .media-shell {
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+    aspect-ratio: auto;
+  }
+
+  .host-reload-notice {
+    flex: 0 0 auto;
+    margin-top: 10px;
+  }
+
+  .topbar {
+    grid-area: controls;
+    position: static;
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .topbar-center {
+    order: 1;
+    justify-content: center;
+  }
+
+  .topbar-side-start {
+    order: 2;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .topbar-side-end {
+    order: 3;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .topbar-logo {
+    width: 48px;
+  }
+
+  .profile-chip-name {
+    max-width: 190px;
+  }
+
+  .floating-menu {
+    inset-inline-end: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .chat-panel {
+    grid-area: chat;
+    height: 100%;
+  }
+}
+
 @media (max-width: 980px) {
   .hero-layout {
     min-height: calc(100dvh - max(8px, env(safe-area-inset-top)) - 34px);
@@ -1671,6 +1846,11 @@ body.theater-mode .media-shell {
 
   .upload-dropzone {
     min-height: 220px;
+  }
+
+  .upload-video-button {
+    min-height: 0;
+    padding: 9px 14px;
   }
 
   .youtube-form {
