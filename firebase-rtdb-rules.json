@@ -19,6 +19,9 @@
         "createdAt": {
           ".validate": "newData.isNumber()"
         },
+        "lastActivity": {
+          ".validate": "newData.isNumber()"
+        },
         "film": {
           ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && (!newData.hasChild('source') || newData.child('source').val() === 'file' || (newData.child('source').val() === 'youtube' && newData.child('youtubeId').isString() && newData.child('youtubeId').val().matches(/^[A-Za-z0-9_-]{11}$/))))"
         },
@@ -41,6 +44,16 @@
               ".validate": "newData.hasChildren(['type','from','sentAt']) && newData.child('type').isString() && newData.child('from').isString() && newData.child('sentAt').isNumber()"
             }
           }
+        }
+      }
+    },
+    "roomIndex": {
+      ".read": true,
+      "$roomId": {
+        ".write": "$roomId.matches(/^[0-9]{4}$/)",
+        ".validate": "newData.val() === null || newData.child('lastActivity').isNumber()",
+        "lastActivity": {
+          ".validate": "newData.isNumber()"
         }
       }
     }

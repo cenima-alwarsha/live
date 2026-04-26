@@ -32,6 +32,9 @@ const ACTIVE_ROOM_STORAGE_KEY = "cinema-al-warsha-active-room";
 const HOST_MEDIA_DB_NAME = "cinema-al-warsha-db";
 const HOST_MEDIA_STORE_NAME = "host-media";
 const YOUTUBE_SEARCH_API_KEY = firebaseConfig.apiKey;
+const IDLE_ROOM_TTL_MS = 10 * 60 * 1000;
+const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
+const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
 
 const RTC_CONFIGURATION = {
   iceServers: [
@@ -93,6 +96,7 @@ const dom = {
   uploadProgressBar: document.getElementById("uploadProgressBar"),
   uploadHint: document.getElementById("uploadHint"),
   uploadBackButton: document.getElementById("uploadBackButton"),
+  cancelRoomButton: document.getElementById("cancelRoomButton"),
   youtubeForm: document.getElementById("youtubeForm"),
   youtubeUrlInput: document.getElementById("youtubeUrlInput"),
   youtubeSubmitButton: document.getElementById("youtubeSubmitButton"),
@@ -228,6 +232,8 @@ const state = {
   lastViewerReadyAt: 0,
   lastSyncSentAt: 0,
   lastSyncSignature: "",
+  lastActivitySentAt: 0,
+  idleCleanupTimer: null,
   lastVisibilityToastAt: 0,
   replyDraft: null,
   uploadProgress: 0,
@@ -246,6 +252,7 @@ const state = {
 
 restorePrettyRoute();
 attachEvents();
+startIdleCleanup();
 boot().catch((error) => {
   console.error(error);
   switchScreen("home");
@@ -301,6 +308,7 @@ function attachEvents() {
   dom.joinRoomInput.addEventListener("input", handleJoinRoomInput);
   dom.movieFileInput.addEventListener("change", handleMovieFileChange);
   dom.uploadBackButton.addEventListener("click", returnToRoomFromUpload);
+  dom.cancelRoomButton.addEventListener("click", handleCancelRoom);
   dom.youtubeForm.addEventListener("submit", handleYoutubeSubmit);
   dom.youtubeUrlInput.addEventListener("input", handleYoutubeInput);
   dom.youtubeSearchResults.addEventListener("scroll", handleYoutubeResultsScroll);
@@ -338,6 +346,7 @@ function attachEvents() {
   });
   dom.hostSeekBar.addEventListener("input", () => {
     revealHostControls();
+    setHostSeekProgress(dom.hostSeekBar.value);
     handleHostSeek();
   });
   document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -501,6 +510,7 @@ async function createRoom(name) {
   const roomId = await generateUniqueRoomId();
   const memberId = createClientId();
   const avatar = createAvatar(memberId, name);
+  const now = Date.now();
   const session = {
     roomId,
     memberId,
@@ -513,16 +523,19 @@ async function createRoom(name) {
     roomId,
     creatorId: memberId,
     creatorName: name,
-    createdAt: Date.now(),
+    createdAt: now,
+    lastActivity: now,
     status: "preparing",
     film: null,
     sync: {
       currentTime: 0,
       duration: 0,
       isPlaying: false,
-      updatedAt: Date.now(),
+      updatedAt: now,
     },
   });
+  await touchRoomIndex(roomId, now).catch((error) => console.warn("activity index failed", error));
+  state.lastActivitySentAt = now;
 
   saveRoomSession(session);
   setActiveRoomId(roomId);
@@ -542,6 +555,12 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   }
 
   const roomData = roomSnapshot.val();
+  if (isRoomIdle(roomData)) {
+    await deleteRoomById(roomId);
+    clearRoomSession(roomId);
+    throw new Error("انتهت الغرفة بسبب عدم التفاعل.");
+  }
+
   const memberId = existingSession?.memberId || createClientId();
   const isHost = roomData.creatorId === memberId;
   const name = sanitizeName(existingSession?.name || preferredName);
@@ -584,6 +603,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   updateModeUi();
 
   await registerPresence();
+  touchRoomActivity(true).catch((error) => console.warn("activity touch failed", error));
   subscribeToRoom(roomId);
 
   if (state.isHost) {
@@ -695,6 +715,85 @@ function cleanupRoomSubscriptions() {
   state.listeners = [];
 }
 
+function getRoomLastActivity(roomData) {
+  return Number(roomData?.lastActivity || roomData?.sync?.updatedAt || roomData?.createdAt || 0);
+}
+
+function isRoomIdle(roomData) {
+  const lastActivity = getRoomLastActivity(roomData);
+  return Boolean(lastActivity && Date.now() - lastActivity > IDLE_ROOM_TTL_MS);
+}
+
+function shouldTouchRoomActivity(now = Date.now(), force = false) {
+  if (!force && now - state.lastActivitySentAt < ACTIVITY_TOUCH_INTERVAL_MS) {
+    return false;
+  }
+
+  state.lastActivitySentAt = now;
+  return true;
+}
+
+async function touchRoomIndex(roomId, lastActivity = Date.now()) {
+  if (!roomId) {
+    return;
+  }
+
+  await set(ref(db, `roomIndex/${roomId}`), { lastActivity });
+}
+
+async function touchRoomActivity(force = false) {
+  if (!state.roomId) {
+    return;
+  }
+
+  const now = Date.now();
+  if (!shouldTouchRoomActivity(now, force)) {
+    return;
+  }
+
+  await Promise.allSettled([
+    update(ref(db, `rooms/${state.roomId}`), { lastActivity: now }),
+    touchRoomIndex(state.roomId, now),
+  ]);
+}
+
+async function deleteRoomById(roomId) {
+  if (!/^\d{4}$/.test(roomId || "")) {
+    return;
+  }
+
+  await Promise.allSettled([
+    remove(ref(db, `rooms/${roomId}`)),
+    remove(ref(db, `roomIndex/${roomId}`)),
+  ]);
+}
+
+function startIdleCleanup() {
+  cleanupIdleRooms().catch((error) => console.warn("idle cleanup failed", error));
+  state.idleCleanupTimer = window.setInterval(() => {
+    cleanupIdleRooms().catch((error) => console.warn("idle cleanup failed", error));
+  }, IDLE_CLEANUP_INTERVAL_MS);
+}
+
+async function cleanupIdleRooms() {
+  const snapshot = await get(ref(db, "roomIndex")).catch(() => null);
+  if (!snapshot?.exists()) {
+    return;
+  }
+
+  const now = Date.now();
+  const deletions = [];
+  snapshot.forEach((child) => {
+    const roomId = child.key;
+    const lastActivity = Number(child.val()?.lastActivity || 0);
+    if (/^\d{4}$/.test(roomId || "") && lastActivity && now - lastActivity > IDLE_ROOM_TTL_MS) {
+      deletions.push(deleteRoomById(roomId));
+    }
+  });
+
+  await Promise.allSettled(deletions);
+}
+
 function buildMemberPayload() {
   return {
     name: state.name,
@@ -736,6 +835,7 @@ function switchScreen(name) {
   dom.uploadScreen.classList.toggle("active", name === "upload");
   dom.roomScreen.classList.toggle("active", name === "room");
   syncUploadBackButton();
+  updateModeUi();
   if (name !== "room") {
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
@@ -763,7 +863,7 @@ function updateProfileUi() {
 function updateModeUi() {
   const showHostControls = state.isHost && state.localPrepared && state.screen === "room";
   const youtubeMode = isYoutubeMode();
-  dom.hostMenuWrap.classList.toggle("hidden", !state.isHost || state.screen !== "room");
+  dom.hostMenuWrap.classList.toggle("hidden", !(state.isHost && state.roomId && state.screen === "room"));
   dom.hostVideo.classList.toggle("hidden", !showHostControls || youtubeMode);
   dom.viewerCanvas.classList.toggle("hidden", state.isHost || youtubeMode);
   dom.remoteVideo.classList.toggle("hidden", state.isHost || youtubeMode);
@@ -801,8 +901,25 @@ function returnToRoomFromUpload() {
   revealHostControls();
 }
 
+async function handleCancelRoom() {
+  if (!state.isHost || !state.roomId) {
+    return;
+  }
+
+  const approved = await askForConfirmation(
+    "إلغاء الغرفة",
+    "سيتم حذف الغرفة والرجوع للصفحة الرئيسية. هل تريد المتابعة؟"
+  );
+  if (!approved) {
+    return;
+  }
+
+  await deleteCurrentRoom("تم إلغاء الغرفة.");
+}
+
 function syncUploadBackButton() {
   dom.uploadBackButton.classList.toggle("hidden", !(state.isHost && state.localPrepared && state.roomId));
+  dom.cancelRoomButton.classList.toggle("hidden", !(state.isHost && state.roomId && state.screen === "upload"));
 }
 
 function resetUploadProgress() {
@@ -1859,28 +1976,33 @@ function stopYoutubeTickLoop() {
 }
 
 async function publishHostMovieState() {
+  const now = Date.now();
   const payload = {
     status: "live",
+    lastActivity: now,
     film: {
       source: "file",
       name: state.hostMedia.name,
       size: state.hostMedia.size,
       duration: roundTime(state.hostMedia.duration),
-      preparedAt: Date.now(),
+      preparedAt: now,
     },
     sync: {
       currentTime: 0,
       duration: roundTime(state.hostMedia.duration),
       isPlaying: false,
-      updatedAt: Date.now(),
+      updatedAt: now,
     },
   };
   await update(ref(db, `rooms/${state.roomId}`), payload);
+  await touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
 }
 
 async function publishYoutubeMovieState() {
+  const now = Date.now();
   const payload = {
     status: "live",
+    lastActivity: now,
     film: {
       source: "youtube",
       name: state.hostMedia.name || "YouTube",
@@ -1888,16 +2010,17 @@ async function publishYoutubeMovieState() {
       duration: roundTime(state.hostMedia.duration),
       youtubeId: state.hostMedia.youtubeId,
       url: state.hostMedia.youtubeUrl,
-      preparedAt: Date.now(),
+      preparedAt: now,
     },
     sync: {
       currentTime: 0,
       duration: roundTime(state.hostMedia.duration),
       isPlaying: false,
-      updatedAt: Date.now(),
+      updatedAt: now,
     },
   };
   await update(ref(db, `rooms/${state.roomId}`), payload);
+  await touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
 }
 
 function updateHostPlaybackUi() {
@@ -1906,7 +2029,7 @@ function updateHostPlaybackUi() {
     const currentTime = getYoutubeCurrentTime();
     dom.hostMovieName.textContent = getActiveFilm()?.name || "YouTube";
     dom.hostTimeLabel.textContent = `${formatDuration(currentTime)} / ${formatDuration(duration)}`;
-    dom.hostSeekBar.value = duration ? `${(currentTime / duration) * 100}` : "0";
+    setHostSeekProgress(duration ? (currentTime / duration) * 100 : 0);
     dom.hostPlayPauseButton.innerHTML = isYoutubePlaying() ? ICONS.pause : ICONS.play;
     dom.hostPlayPauseButton.setAttribute("aria-label", isYoutubePlaying() ? "إيقاف" : "تشغيل");
     return;
@@ -1916,9 +2039,15 @@ function updateHostPlaybackUi() {
   const currentTime = dom.hostVideo.currentTime || 0;
   dom.hostMovieName.textContent = state.hostMedia.name || "الفيلم";
   dom.hostTimeLabel.textContent = `${formatDuration(currentTime)} / ${formatDuration(duration)}`;
-  dom.hostSeekBar.value = duration ? `${(currentTime / duration) * 100}` : "0";
+  setHostSeekProgress(duration ? (currentTime / duration) * 100 : 0);
   dom.hostPlayPauseButton.innerHTML = dom.hostVideo.paused ? ICONS.play : ICONS.pause;
   dom.hostPlayPauseButton.setAttribute("aria-label", dom.hostVideo.paused ? "تشغيل" : "إيقاف");
+}
+
+function setHostSeekProgress(percent) {
+  const safePercent = Math.min(Math.max(Number(percent) || 0, 0), 100);
+  dom.hostSeekBar.value = `${safePercent}`;
+  dom.hostSeekBar.style.setProperty("--seek-progress", `${safePercent}%`);
 }
 
 function handleHostSeek() {
@@ -2005,15 +2134,15 @@ async function syncHostPlayback(force = false) {
 
   const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : state.hostMedia.duration || 0;
   const currentTime = dom.hostVideo.currentTime || 0;
+  const now = Date.now();
   const payload = {
     currentTime: roundTime(currentTime),
     duration: roundTime(duration),
     isPlaying: !dom.hostVideo.paused && !dom.hostVideo.ended,
-    updatedAt: Date.now(),
+    updatedAt: now,
   };
 
   const signature = JSON.stringify(payload);
-  const now = Date.now();
   if (!force && signature === state.lastSyncSignature && now - state.lastSyncSentAt < 850) {
     return;
   }
@@ -2021,7 +2150,7 @@ async function syncHostPlayback(force = false) {
   state.lastSyncSignature = signature;
   state.lastSyncSentAt = now;
 
-  update(ref(db, `rooms/${state.roomId}`), {
+  const roomUpdate = {
     status: "live",
     sync: payload,
     film: {
@@ -2029,23 +2158,30 @@ async function syncHostPlayback(force = false) {
       name: state.hostMedia.name,
       size: state.hostMedia.size,
       duration: roundTime(duration),
-      preparedAt: state.roomData?.film?.preparedAt || Date.now(),
+      preparedAt: state.roomData?.film?.preparedAt || now,
     },
-  }).catch((error) => console.error("sync error", error));
+  };
+
+  if (shouldTouchRoomActivity(now, force)) {
+    roomUpdate.lastActivity = now;
+    touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
+  }
+
+  update(ref(db, `rooms/${state.roomId}`), roomUpdate).catch((error) => console.error("sync error", error));
 }
 
 async function syncYoutubeHostPlayback(force = false) {
   const duration = getYoutubeDuration();
   const currentTime = getYoutubeCurrentTime();
+  const now = Date.now();
   const payload = {
     currentTime: roundTime(currentTime),
     duration: roundTime(duration),
     isPlaying: isYoutubePlaying(),
-    updatedAt: Date.now(),
+    updatedAt: now,
   };
 
   const signature = JSON.stringify({ source: "youtube", ...payload });
-  const now = Date.now();
   if (!force && signature === state.lastSyncSignature && now - state.lastSyncSentAt < 850) {
     return;
   }
@@ -2053,7 +2189,7 @@ async function syncYoutubeHostPlayback(force = false) {
   state.lastSyncSignature = signature;
   state.lastSyncSentAt = now;
 
-  update(ref(db, `rooms/${state.roomId}`), {
+  const roomUpdate = {
     status: "live",
     sync: payload,
     film: {
@@ -2063,9 +2199,16 @@ async function syncYoutubeHostPlayback(force = false) {
       duration: roundTime(duration),
       youtubeId: getActiveFilm()?.youtubeId || state.hostMedia.youtubeId,
       url: state.hostMedia.youtubeUrl || getActiveFilm()?.url || "",
-      preparedAt: state.roomData?.film?.preparedAt || Date.now(),
+      preparedAt: state.roomData?.film?.preparedAt || now,
     },
-  }).catch((error) => console.error("youtube sync error", error));
+  };
+
+  if (shouldTouchRoomActivity(now, force)) {
+    roomUpdate.lastActivity = now;
+    touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
+  }
+
+  update(ref(db, `rooms/${state.roomId}`), roomUpdate).catch((error) => console.error("youtube sync error", error));
 }
 
 function renderViewerTime(sync = null) {
@@ -2152,6 +2295,7 @@ async function handleSendMessage(event) {
     }
 
     await push(ref(db, `rooms/${state.roomId}/messages`), payload);
+    touchRoomActivity().catch((error) => console.warn("activity touch failed", error));
   } catch (error) {
     console.error(error);
     showToast(getFriendlyErrorMessage(error));
@@ -2425,6 +2569,43 @@ async function leaveRoom() {
   showToast("تم الخروج من الغرفة.");
 }
 
+async function deleteCurrentRoom(successMessage = "تم حذف الغرفة.") {
+  const roomId = state.roomId || state.routeRoomId;
+  const wasHost = state.isHost;
+
+  cleanupRoomSubscriptions();
+  cleanupViewerReconnect();
+  closeAllPeers();
+  closeDrawer();
+  resetHostMovieState();
+
+  await deleteRoomById(roomId);
+
+  clearRoomSession(roomId);
+  if (wasHost) {
+    await clearPersistedHostMovie(roomId).catch(() => {});
+  }
+
+  state.roomId = null;
+  state.roomData = null;
+  state.memberId = null;
+  state.routeRoomId = null;
+  state.isHost = false;
+  state.micEnabled = false;
+  state.lastActivitySentAt = 0;
+  state.members = new Map();
+  state.knownMemberIds.clear();
+  state.presenceReady = false;
+  state.messageIds.clear();
+  dom.messagesList.innerHTML = "";
+  cancelReply();
+  renderParticipants();
+  updateViewerCount();
+  updateMicButton();
+  navigateHome();
+  showToast(successMessage);
+}
+
 async function handleRenameSubmit(event) {
   event.preventDefault();
   const nextName = sanitizeName(dom.renameInput.value);
@@ -2446,6 +2627,7 @@ async function handleRenameSubmit(event) {
 
   updateProfileUi();
   await update(ref(db, `rooms/${state.roomId}/members/${state.memberId}`), buildMemberPayload());
+  touchRoomActivity(true).catch((error) => console.warn("activity touch failed", error));
 
   if (state.isHost) {
     update(ref(db, `rooms/${state.roomId}`), { creatorName: nextName }).catch(() => {});
@@ -2585,6 +2767,7 @@ async function refreshMemberPresence() {
   }
 
   await update(ref(db, `rooms/${state.roomId}/members/${state.memberId}`), buildMemberPayload());
+  touchRoomActivity().catch((error) => console.warn("activity touch failed", error));
 }
 
 async function askForConfirmation(title, message) {
@@ -3866,6 +4049,10 @@ function removeStorageValue(storage, key) {
 }
 
 function cleanupMediaResources() {
+  if (state.idleCleanupTimer) {
+    clearInterval(state.idleCleanupTimer);
+    state.idleCleanupTimer = null;
+  }
   cleanupViewerReconnect();
   stopViewerCanvasLoop();
   stopHostVideoRenderLoop();
