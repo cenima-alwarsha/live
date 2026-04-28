@@ -13,6 +13,13 @@ import {
   set,
   update,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+import {
+  deleteObject,
+  getDownloadURL,
+  getStorage,
+  ref as storageRef,
+  uploadBytesResumable,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCBD2JPX9bxHE5ghjmFnhsRB1PPFVRblzw",
@@ -35,6 +42,11 @@ const YOUTUBE_SEARCH_API_KEY = firebaseConfig.apiKey;
 const IDLE_ROOM_TTL_MS = 30 * 60 * 1000;
 const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
 const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
+const HOST_VIDEO_MAX_FRAMERATE = 30;
+const HOST_VIDEO_HIGH_BITRATE = 8_000_000;
+const HOST_VIDEO_MEDIUM_BITRATE = 5_000_000;
+const HOST_VIDEO_LOW_BITRATE = 3_000_000;
+const HOST_VIDEO_MIN_BITRATE = 2_000_000;
 
 const RTC_CONFIGURATION = {
   iceServers: [
@@ -176,6 +188,7 @@ const dom = {
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getDatabase(firebaseApp);
+const storage = getStorage(firebaseApp);
 let hostMediaDbPromise = null;
 
 const state = {
@@ -211,6 +224,8 @@ const state = {
   hostCaptureStream: null,
   hostVideoTrack: null,
   hostVideoRenderLoop: null,
+  pendingUploadMode: "",
+  lastStorageMediaPath: "",
   wakeLock: null,
   youtubeApiPromise: null,
   youtubePlayer: null,
@@ -252,6 +267,9 @@ const state = {
     duration: 0,
     youtubeId: "",
     youtubeUrl: "",
+    storagePath: "",
+    url: "",
+    contentType: "",
   },
 };
 
@@ -387,10 +405,10 @@ function attachEvents() {
     updateHostPlaybackUi();
     syncHostPlayback(true);
     releaseHostWakeLock();
+    playQueuedFilmIfReady().catch((error) => console.error("queue promote failed", error));
   });
 
   dom.remoteVideo.addEventListener("loadedmetadata", () => {
-    startViewerCanvasLoop();
     attemptRemotePlayback();
     revealViewerControls();
     updateWaitingOverlay();
@@ -628,7 +646,7 @@ async function joinRoom(roomId, preferredName, existingSession = null) {
   subscribeToRoom(roomId);
 
   if (state.isHost) {
-    if (state.hostMedia.fileUrl || roomData?.film?.source === "youtube") {
+    if (state.hostMedia.fileUrl || roomData?.film?.source === "youtube" || roomData?.film?.source === "storage") {
       switchScreen("room");
     } else {
       switchScreen("upload");
@@ -696,6 +714,7 @@ function subscribeToRoom(roomId) {
     renderParticipants();
     updateViewerCount();
     updateWaitingOverlay();
+    retuneHostVideoSenders();
     if (!state.isHost) {
       scheduleViewerReconnect(400);
     }
@@ -767,9 +786,14 @@ async function deleteRoomById(roomId) {
     return;
   }
 
+  const roomSnapshot = await get(ref(db, `rooms/${roomId}`)).catch(() => null);
+  const roomData = roomSnapshot?.exists() ? roomSnapshot.val() : null;
+  const storagePaths = [roomData?.film?.storagePath, roomData?.nextFilm?.storagePath].filter(Boolean);
+
   await Promise.allSettled([
     remove(ref(db, `rooms/${roomId}`)),
     remove(ref(db, `roomIndex/${roomId}`)),
+    ...storagePaths.map((path) => deleteStorageFile(path)),
   ]);
 }
 
@@ -876,7 +900,7 @@ function updateModeUi() {
   const youtubeMode = isYoutubeMode();
   dom.hostMenuWrap.classList.toggle("hidden", !(state.isHost && state.roomId && state.screen === "room"));
   dom.hostVideo.classList.toggle("hidden", !showHostControls || youtubeMode);
-  dom.viewerCanvas.classList.toggle("hidden", state.isHost || youtubeMode);
+  dom.viewerCanvas.classList.add("hidden");
   dom.remoteVideo.classList.toggle("hidden", state.isHost || youtubeMode);
   dom.youtubeShell.classList.toggle("hidden", !youtubeMode || state.screen !== "room");
   dom.hostReloadNotice.classList.toggle(
@@ -897,6 +921,17 @@ function openMediaChooser() {
   if (!state.isHost) {
     return;
   }
+
+  if (shouldQueueNextUpload()) {
+    state.pendingUploadMode = "queue";
+    resetUploadProgress();
+    dom.hostMenuPanel.classList.add("hidden");
+    dom.movieFileInput.click();
+    showToast("اختر الفيلم التالي.");
+    return;
+  }
+
+  state.pendingUploadMode = "replace";
   hideHostControls();
   dom.hostMenuPanel.classList.add("hidden");
   resetUploadProgress();
@@ -910,6 +945,17 @@ function returnToRoomFromUpload() {
   switchScreen("room");
   updateModeUi();
   revealHostControls();
+}
+
+function shouldQueueNextUpload() {
+  if (!state.isHost || !state.roomId || state.screen !== "room" || !state.localPrepared) {
+    return false;
+  }
+
+  const sync = state.roomData?.sync;
+  const duration = Number(sync?.duration || state.hostMedia.duration || 0);
+  const currentTime = Number(sync?.currentTime || dom.hostVideo.currentTime || 0);
+  return Boolean(duration && currentTime < duration - 1.5);
 }
 
 async function handleCancelRoom() {
@@ -973,8 +1019,11 @@ async function handleMovieFileChange(event) {
     return;
   }
 
+  const mode = state.pendingUploadMode || (shouldQueueNextUpload() ? "queue" : "replace");
+  state.pendingUploadMode = "";
+
   try {
-    await prepareHostMovie(file);
+    await prepareHostMovie(file, { mode });
   } catch (error) {
     console.error(error);
     showToast(getFriendlyErrorMessage(error));
@@ -1310,48 +1359,40 @@ async function selectYoutubeResult(result) {
   }
 }
 
-async function prepareHostMovie(file) {
+async function prepareHostMovie(file, options = {}) {
   if (!file.type.startsWith("video/") && !/\.(mkv|mp4|mov|webm)$/i.test(file.name)) {
     throw new Error("اختر ملف فيديو صالحاً.");
+  }
+
+  const mode = options.mode === "queue" ? "queue" : "replace";
+  const startedAt = performance.now();
+  setUploadProgress(2, file.name, mode === "queue" ? "رفع الفيلم التالي" : "بدء الرفع");
+
+  if (mode === "queue") {
+    const queuedFilm = await uploadMovieToStorage(file, {
+      slot: "next",
+      startedAt,
+      statusPrefix: "رفع الفيلم التالي",
+    });
+    await publishQueuedMovieState(queuedFilm);
+    setUploadProgress(100, file.name, "تم تجهيز الفيلم التالي");
+    showToast("تم تجهيز الفيلم التالي وسيبدأ بعد انتهاء الحالي.");
+    return;
   }
 
   cleanupViewerReconnect();
   resetHostMovieState();
   closeAllPeers();
 
-  const startedAt = performance.now();
-  setUploadProgress(12, file.name, "اختيار الملف");
-
-  state.hostMedia.source = "file";
-  state.hostMedia.file = file;
-  state.hostMedia.fileUrl = URL.createObjectURL(file);
-  state.hostMedia.name = file.name;
-  state.hostMedia.size = file.size;
-  state.hostMedia.duration = 0;
-  state.localPrepared = false;
-  dom.hostVideo.src = state.hostMedia.fileUrl;
-  dom.hostVideo.load();
-
-  setUploadProgress(38, file.name, "قراءة الفيلم");
-  await waitForVideoReady(dom.hostVideo, "loadedmetadata");
-  state.hostMedia.duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : 0;
-
-  const elapsed = Math.max((performance.now() - startedAt) / 1000, 0.2);
-  const speedText = `سرعة التهيئة ${formatBytes(file.size / elapsed)}/ث`;
-  setUploadProgress(68, file.name, speedText);
-
-  await waitForPlayable(dom.hostVideo);
-  setUploadProgress(86, file.name, "تفعيل البث");
-
-  await primeHostVideo();
-  setUploadProgress(94, file.name, "حفظ");
-  await persistHostMovie(state.roomId, file).catch((error) => {
-    console.warn("persist host movie failed", error);
-    showToast("تعذر حفظ الفيلم محلياً بعد الإغلاق.");
+  const film = await uploadMovieToStorage(file, {
+    slot: "current",
+    startedAt,
+    statusPrefix: "رفع الفيلم",
   });
-  await publishHostMovieState();
 
-  state.localPrepared = true;
+  await loadHostStorageMovie(film);
+  await publishStorageMovieState(film);
+
   updateModeUi();
   setUploadProgress(100, file.name, "جاهز");
   switchScreen("room");
@@ -1403,6 +1444,238 @@ async function prepareYoutubeMovie(url, youtubeId) {
   revealHostControls();
   await flushPendingViewers();
   showToast("تم تجهيز رابط يوتيوب.");
+}
+
+async function uploadMovieToStorage(file, options = {}) {
+  const slot = options.slot || "current";
+  const startedAt = options.startedAt || performance.now();
+  const statusPrefix = options.statusPrefix || "رفع الفيلم";
+  const safeName = sanitizeStorageFileName(file.name || "movie.mp4");
+  const path = `rooms/${state.roomId}/${slot}-${Date.now()}-${safeName}`;
+  const fileRef = storageRef(storage, path);
+  const metadata = {
+    contentType: file.type || "video/mp4",
+    cacheControl: "private,max-age=3600",
+    customMetadata: {
+      roomId: state.roomId,
+      slot,
+      originalName: file.name || "movie",
+    },
+  };
+
+  const metadataPromise = readLocalVideoMetadata(file);
+  const uploadTask = uploadBytesResumable(fileRef, file, metadata);
+
+  const snapshot = await new Promise((resolve, reject) => {
+    uploadTask.on(
+      "state_changed",
+      (uploadSnapshot) => {
+        const percent = uploadSnapshot.totalBytes
+          ? (uploadSnapshot.bytesTransferred / uploadSnapshot.totalBytes) * 100
+          : 0;
+        const elapsed = Math.max((performance.now() - startedAt) / 1000, 0.25);
+        const speed = uploadSnapshot.bytesTransferred / elapsed;
+        setUploadProgress(
+          Math.max(2, Math.min(percent, 99)),
+          file.name,
+          `${statusPrefix} ${formatBytes(uploadSnapshot.bytesTransferred)} / ${formatBytes(uploadSnapshot.totalBytes)} · ${formatBytes(speed)}/ث`
+        );
+      },
+      reject,
+      () => resolve(uploadTask.snapshot)
+    );
+  });
+
+  const [localMetadata, url] = await Promise.all([
+    metadataPromise,
+    getDownloadURL(snapshot.ref),
+  ]);
+
+  return {
+    source: "storage",
+    name: file.name || "movie",
+    size: file.size || 0,
+    duration: roundTime(localMetadata.duration || 0),
+    storagePath: path,
+    url,
+    contentType: file.type || "video/mp4",
+    preparedAt: Date.now(),
+  };
+}
+
+async function readLocalVideoMetadata(file) {
+  const objectUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.muted = true;
+  video.playsInline = true;
+  video.src = objectUrl;
+
+  try {
+    await waitForVideoReady(video, "loadedmetadata");
+    return {
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+    };
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function loadHostStorageMovie(film) {
+  cleanupYouTubePlayer();
+  releaseHostWakeLock();
+  state.hostCaptureStream?.getTracks().forEach((track) => track.stop());
+  state.hostCaptureStream = null;
+  state.hostVideoTrack = null;
+  state.localPrepared = false;
+  state.hostMedia = createHostMediaFromStorageFilm(film);
+  state.lastStorageMediaPath = film.storagePath || "";
+
+  dom.hostVideo.pause();
+  dom.hostVideo.src = await getStorageFilmUrl(film);
+  dom.hostVideo.load();
+  await waitForVideoReady(dom.hostVideo, "loadedmetadata");
+  state.hostMedia.duration = Number.isFinite(dom.hostVideo.duration)
+    ? dom.hostVideo.duration
+    : film.duration || 0;
+  await waitForPlayable(dom.hostVideo);
+  state.localPrepared = true;
+}
+
+function createHostMediaFromStorageFilm(film) {
+  return {
+    source: "storage",
+    file: null,
+    fileUrl: "",
+    name: film.name || "الفيلم",
+    size: film.size || 0,
+    duration: film.duration || 0,
+    youtubeId: "",
+    youtubeUrl: "",
+    storagePath: film.storagePath || "",
+    url: film.url || "",
+    contentType: film.contentType || "video/mp4",
+  };
+}
+
+async function getStorageFilmUrl(film) {
+  if (film?.url) {
+    return film.url;
+  }
+  if (!film?.storagePath) {
+    throw new Error("تعذر العثور على رابط الفيلم.");
+  }
+  return getDownloadURL(storageRef(storage, film.storagePath));
+}
+
+async function publishStorageMovieState(film) {
+  const now = Date.now();
+  const previousPath = state.roomData?.film?.storagePath;
+  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
+  const payload = {
+    status: "live",
+    lastActivity: now,
+    film,
+    nextFilm: null,
+    sync: {
+      currentTime: 0,
+      duration: roundTime(film.duration || 0),
+      isPlaying: false,
+      updatedAt: now,
+    },
+  };
+
+  await update(ref(db, `rooms/${state.roomId}`), payload);
+  state.roomData = {
+    ...(state.roomData || {}),
+    ...payload,
+  };
+  await touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
+
+  if (previousPath && previousPath !== film.storagePath) {
+    deleteStorageFile(previousPath).catch((error) => console.warn("old storage delete failed", error));
+  }
+  if (previousQueuedPath && previousQueuedPath !== film.storagePath) {
+    deleteStorageFile(previousQueuedPath).catch((error) => console.warn("old queued delete failed", error));
+  }
+}
+
+async function publishQueuedMovieState(film) {
+  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
+  await update(ref(db, `rooms/${state.roomId}`), {
+    nextFilm: film,
+  });
+  state.roomData = {
+    ...(state.roomData || {}),
+    nextFilm: film,
+  };
+
+  if (previousQueuedPath && previousQueuedPath !== film.storagePath) {
+    deleteStorageFile(previousQueuedPath).catch((error) => console.warn("old queued delete failed", error));
+  }
+}
+
+async function playQueuedFilmIfReady() {
+  if (!state.isHost || !state.roomId) {
+    return;
+  }
+
+  const nextFilm = state.roomData?.nextFilm;
+  if (!nextFilm?.storagePath) {
+    return;
+  }
+
+  const previousPath = state.roomData?.film?.storagePath;
+  await loadHostStorageMovie(nextFilm);
+  await prepareHostMovieAudio();
+  const started = await dom.hostVideo.play().then(
+    () => true,
+    () => false
+  );
+
+  const now = Date.now();
+  const payload = {
+    status: "live",
+    lastActivity: now,
+    film: {
+      ...nextFilm,
+      preparedAt: nextFilm.preparedAt || now,
+    },
+    nextFilm: null,
+    sync: {
+      currentTime: 0,
+      duration: roundTime(nextFilm.duration || state.hostMedia.duration || 0),
+      isPlaying: started,
+      updatedAt: now,
+    },
+  };
+
+  await update(ref(db, `rooms/${state.roomId}`), payload);
+  state.roomData = {
+    ...(state.roomData || {}),
+    ...payload,
+  };
+  await touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
+
+  if (previousPath && previousPath !== nextFilm.storagePath) {
+    deleteStorageFile(previousPath).catch((error) => console.warn("previous storage delete failed", error));
+  }
+
+  updateHostPlaybackUi();
+  updateWaitingOverlay();
+  revealHostControls();
+  showToast(started ? "بدأ الفيلم التالي." : "الفيلم التالي جاهز للتشغيل.");
+}
+
+async function deleteStorageFile(path) {
+  if (!path) {
+    return;
+  }
+  await deleteObject(storageRef(storage, path));
 }
 
 function setUploadProgress(percent, fileName, speedLabel) {
@@ -1511,7 +1784,11 @@ function resetHostMovieState() {
     duration: 0,
     youtubeId: "",
     youtubeUrl: "",
+    storagePath: "",
+    url: "",
+    contentType: "",
   };
+  state.lastStorageMediaPath = "";
 
   hideHostControls();
   dom.hostVideo.pause();
@@ -1597,6 +1874,12 @@ function connectMovieAudioSource() {
 
 async function prepareHostMovieAudio() {
   if (!state.isHost || !state.localPrepared) {
+    return;
+  }
+
+  if (isStorageMode()) {
+    dom.hostVideo.muted = false;
+    dom.hostVideo.volume = 1;
     return;
   }
 
@@ -1712,8 +1995,17 @@ function isYoutubeMode() {
   return getActiveFilm()?.source === "youtube";
 }
 
+function isStorageMode() {
+  return getActiveFilm()?.source === "storage";
+}
+
 async function handleRoomMediaUpdate() {
   const film = state.roomData?.film;
+  if (film?.source === "storage") {
+    await handleStorageMediaUpdate(film);
+    return;
+  }
+
   if (film?.source !== "youtube") {
     if (!state.isHost || state.hostMedia.source !== "youtube") {
       cleanupYouTubePlayer();
@@ -1752,6 +2044,91 @@ async function handleRoomMediaUpdate() {
   updateModeUi();
   updateHostPlaybackUi();
   updateWaitingOverlay();
+}
+
+async function handleStorageMediaUpdate(film) {
+  cleanupYouTubePlayer();
+
+  if (state.isHost) {
+    const shouldLoadHost =
+      !state.localPrepared ||
+      state.hostMedia.source !== "storage" ||
+      state.hostMedia.storagePath !== film.storagePath;
+
+    if (shouldLoadHost) {
+      await loadHostStorageMovie(film);
+      await applyStorageSync(state.roomData?.sync, true, true);
+    }
+  } else {
+    await loadViewerStorageMovie(film);
+    await applyStorageSync(state.roomData?.sync);
+    scheduleViewerReconnect(350);
+  }
+
+  updateModeUi();
+  updateHostPlaybackUi();
+  updateWaitingOverlay();
+}
+
+async function loadViewerStorageMovie(film) {
+  const url = await getStorageFilmUrl(film);
+  if (dom.remoteVideo.dataset.storagePath === film.storagePath && dom.remoteVideo.src === url) {
+    return;
+  }
+
+  cleanupViewerReconnect();
+  closeAllPeers();
+  stopViewerCanvasLoop();
+  state.viewerRemoteStream = null;
+  dom.remoteAudio.pause();
+  dom.remoteAudio.srcObject = null;
+  dom.remoteVideo.pause();
+  dom.remoteVideo.srcObject = null;
+  dom.remoteVideo.muted = false;
+  dom.remoteVideo.dataset.storagePath = film.storagePath || "";
+  dom.remoteVideo.src = url;
+  dom.remoteVideo.load();
+}
+
+async function applyStorageSync(sync = null, force = false, allowHost = false) {
+  if (!sync || (state.isHost && !allowHost)) {
+    return;
+  }
+
+  const video = state.isHost ? dom.hostVideo : dom.remoteVideo;
+  if (!video.src && !video.srcObject) {
+    return;
+  }
+
+  if (video.readyState === 0) {
+    await waitForVideoReady(video, "loadedmetadata").catch(() => {});
+  }
+
+  const duration = Number.isFinite(video.duration) ? video.duration : sync.duration || 0;
+  const targetTime = getProjectedSyncTime(sync, duration);
+  const currentTime = video.currentTime || 0;
+
+  if (force || Math.abs(currentTime - targetTime) > 1.25) {
+    video.currentTime = targetTime;
+  }
+
+  if (sync.isPlaying) {
+    const started = await video.play().then(
+      () => true,
+      () => false
+    );
+    dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || started);
+  } else {
+    video.pause();
+    dom.playUnlockOverlay.classList.add("hidden");
+  }
+
+  if (!state.isHost) {
+    renderViewerTime({
+      currentTime: targetTime,
+      duration,
+    });
+  }
 }
 
 function loadYouTubeApi() {
@@ -1888,6 +2265,10 @@ function handleYoutubeStateChange(event) {
     releaseHostWakeLock();
   }
   syncHostPlayback(true);
+
+  if (event.data === window.YT?.PlayerState?.ENDED) {
+    playQueuedFilmIfReady().catch((error) => console.error("queue promote failed", error));
+  }
 }
 
 async function applyYoutubeSync(sync = null, force = false, allowHost = false) {
@@ -1988,6 +2369,8 @@ function stopYoutubeTickLoop() {
 
 async function publishHostMovieState() {
   const now = Date.now();
+  const previousPath = state.roomData?.film?.storagePath;
+  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
   const payload = {
     status: "live",
     lastActivity: now,
@@ -1998,6 +2381,7 @@ async function publishHostMovieState() {
       duration: roundTime(state.hostMedia.duration),
       preparedAt: now,
     },
+    nextFilm: null,
     sync: {
       currentTime: 0,
       duration: roundTime(state.hostMedia.duration),
@@ -2006,11 +2390,23 @@ async function publishHostMovieState() {
     },
   };
   await update(ref(db, `rooms/${state.roomId}`), payload);
+  state.roomData = {
+    ...(state.roomData || {}),
+    ...payload,
+  };
   await touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
+
+  [previousPath, previousQueuedPath].forEach((path) => {
+    if (path) {
+      deleteStorageFile(path).catch((error) => console.warn("storage delete failed", error));
+    }
+  });
 }
 
 async function publishYoutubeMovieState() {
   const now = Date.now();
+  const previousPath = state.roomData?.film?.storagePath;
+  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
   const payload = {
     status: "live",
     lastActivity: now,
@@ -2023,6 +2419,7 @@ async function publishYoutubeMovieState() {
       url: state.hostMedia.youtubeUrl,
       preparedAt: now,
     },
+    nextFilm: null,
     sync: {
       currentTime: 0,
       duration: roundTime(state.hostMedia.duration),
@@ -2031,7 +2428,17 @@ async function publishYoutubeMovieState() {
     },
   };
   await update(ref(db, `rooms/${state.roomId}`), payload);
+  state.roomData = {
+    ...(state.roomData || {}),
+    ...payload,
+  };
   await touchRoomIndex(state.roomId, now).catch((error) => console.warn("activity index failed", error));
+
+  [previousPath, previousQueuedPath].forEach((path) => {
+    if (path) {
+      deleteStorageFile(path).catch((error) => console.warn("storage delete failed", error));
+    }
+  });
 }
 
 function updateHostPlaybackUi() {
@@ -2172,13 +2579,7 @@ async function syncHostPlayback(force = false) {
   const roomUpdate = {
     status: "live",
     sync: payload,
-    film: {
-      source: "file",
-      name: state.hostMedia.name,
-      size: state.hostMedia.size,
-      duration: roundTime(duration),
-      preparedAt: state.roomData?.film?.preparedAt || now,
-    },
+    film: buildCurrentHostFilmPayload(duration, now),
   };
 
   if (shouldTouchRoomActivity(now, force)) {
@@ -2230,6 +2631,29 @@ async function syncYoutubeHostPlayback(force = false) {
   update(ref(db, `rooms/${state.roomId}`), roomUpdate).catch((error) => console.error("youtube sync error", error));
 }
 
+function buildCurrentHostFilmPayload(duration, now = Date.now()) {
+  if (isStorageMode()) {
+    return {
+      source: "storage",
+      name: state.hostMedia.name,
+      size: state.hostMedia.size,
+      duration: roundTime(duration),
+      storagePath: state.hostMedia.storagePath,
+      url: state.hostMedia.url,
+      contentType: state.hostMedia.contentType || "video/mp4",
+      preparedAt: state.roomData?.film?.preparedAt || now,
+    };
+  }
+
+  return {
+    source: "file",
+    name: state.hostMedia.name,
+    size: state.hostMedia.size,
+    duration: roundTime(duration),
+    preparedAt: state.roomData?.film?.preparedAt || now,
+  };
+}
+
 function renderViewerTime(sync = null) {
   const currentTime = sync?.currentTime || 0;
   const duration = sync?.duration || 0;
@@ -2242,6 +2666,7 @@ function updateWaitingOverlay() {
   const creatorOnline = !!state.roomData?.creatorId && state.members.has(state.roomData.creatorId);
   const roomIsLive = state.roomData?.status === "live";
   const youtubeMode = isYoutubeMode();
+  const storageMode = isStorageMode();
 
   if (state.isHost && state.localPrepared) {
     dom.waitingState.classList.add("hidden");
@@ -2271,6 +2696,17 @@ function updateWaitingOverlay() {
 
   if (youtubeMode) {
     if (state.youtubePlayer) {
+      dom.waitingState.classList.add("hidden");
+    } else {
+      dom.waitingTitle.textContent = "جاري الاتصال";
+      dom.waitingText.textContent = "";
+      dom.waitingState.classList.remove("hidden");
+    }
+    return;
+  }
+
+  if (storageMode) {
+    if (dom.remoteVideo.src || state.isHost) {
       dom.waitingState.classList.add("hidden");
     } else {
       dom.waitingTitle.textContent = "جاري الاتصال";
@@ -2921,7 +3357,7 @@ async function sendSignal(targetId, payload) {
 }
 
 async function createOfferForViewer(viewerId) {
-  if (!state.localPrepared || (!state.hostVideoTrack && !isYoutubeMode())) {
+  if (!state.localPrepared || (!state.hostVideoTrack && !isYoutubeMode() && !isStorageMode())) {
     state.pendingViewers.add(viewerId);
     return;
   }
@@ -2969,16 +3405,49 @@ async function tuneVideoSender(sender) {
 
   const parameters = sender.getParameters();
   if (!parameters.encodings?.length) {
+    parameters.encodings = [{}];
+  }
+
+  if (!parameters.encodings.length) {
     return;
   }
 
-  parameters.degradationPreference = "maintain-framerate";
-  parameters.encodings[0].maxBitrate = 5_000_000;
-  parameters.encodings[0].maxFramerate = 30;
+  parameters.degradationPreference = "balanced";
+  parameters.encodings[0].maxBitrate = getTargetVideoBitrate();
+  parameters.encodings[0].maxFramerate = HOST_VIDEO_MAX_FRAMERATE;
+  parameters.encodings[0].scaleResolutionDownBy = 1;
 
   await sender.setParameters(parameters).catch((error) => {
     console.warn("video sender tuning failed", error);
   });
+}
+
+function retuneHostVideoSenders() {
+  if (!state.isHost) {
+    return;
+  }
+
+  state.peers.forEach((peer) => {
+    if (peer.role !== "host") {
+      return;
+    }
+    const sender = peer.pc.getSenders().find((item) => item.track?.kind === "video");
+    tuneVideoSender(sender).catch((error) => console.warn("video sender retune failed", error));
+  });
+}
+
+function getTargetVideoBitrate() {
+  const viewerCount = Math.max((state.members.size || 1) - 1, 1);
+  if (viewerCount <= 1) {
+    return HOST_VIDEO_HIGH_BITRATE;
+  }
+  if (viewerCount === 2) {
+    return HOST_VIDEO_MEDIUM_BITRATE;
+  }
+  if (viewerCount <= 4) {
+    return HOST_VIDEO_LOW_BITRATE;
+  }
+  return HOST_VIDEO_MIN_BITRATE;
 }
 
 function createPeer(peerId, role) {
@@ -3082,6 +3551,16 @@ async function ensureViewerSilentTrack() {
 }
 
 function handleIncomingHostTrack(event) {
+  if (isStorageMode()) {
+    const stream = event.streams[0] || new MediaStream([event.track]);
+    if (event.track.kind === "audio") {
+      dom.remoteAudio.srcObject = stream;
+      dom.remoteAudio.play().catch(() => {});
+    }
+    updateWaitingOverlay();
+    return;
+  }
+
   if (!state.viewerRemoteStream) {
     state.viewerRemoteStream = new MediaStream();
   }
@@ -3094,7 +3573,6 @@ function handleIncomingHostTrack(event) {
   dom.remoteVideo.muted = true;
   dom.remoteAudio.srcObject = state.viewerRemoteStream;
   attemptRemotePlayback();
-  startViewerCanvasLoop();
   updateWaitingOverlay();
 }
 
@@ -3273,9 +3751,11 @@ function cleanupPeer(peerId) {
 
   if (peer.role === "viewer") {
     state.viewerMicSender = null;
-    state.viewerRemoteStream = null;
-    dom.remoteVideo.pause();
-    dom.remoteVideo.srcObject = null;
+    if (!isStorageMode()) {
+      state.viewerRemoteStream = null;
+      dom.remoteVideo.pause();
+      dom.remoteVideo.srcObject = null;
+    }
     dom.remoteAudio.pause();
     dom.remoteAudio.srcObject = null;
     stopViewerCanvasLoop();
@@ -3502,6 +3982,11 @@ async function attemptRemotePlayback() {
     return;
   }
 
+  if (isStorageMode()) {
+    await applyStorageSync(state.roomData?.sync, true);
+    return;
+  }
+
   if (!dom.remoteVideo.srcObject && !dom.remoteAudio.srcObject) {
     return;
   }
@@ -3688,6 +4173,17 @@ function extractYoutubeId(value) {
 function normalizeYoutubeId(value) {
   const id = (value || "").trim();
   return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
+}
+
+function sanitizeStorageFileName(value) {
+  const fallback = "movie.mp4";
+  const cleaned = String(value || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|#%{}^~[\]`]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120);
+  return cleaned || fallback;
 }
 
 function buildYoutubeWatchUrl(videoId) {
@@ -3915,6 +4411,13 @@ function wait(milliseconds) {
 }
 
 function waitForVideoReady(video, eventName) {
+  if (eventName === "loadedmetadata" && video.readyState >= 1) {
+    return Promise.resolve();
+  }
+  if (eventName === "canplay" && video.readyState >= 3) {
+    return Promise.resolve();
+  }
+
   return new Promise((resolve, reject) => {
     const onReady = () => {
       cleanup();

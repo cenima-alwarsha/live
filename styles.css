@@ -879,6 +879,7 @@ html.resume-room #connectingScreen {
 }
 
 .host-video,
+.remote-video,
 .viewer-canvas {
   width: 100%;
   height: 100%;
@@ -890,17 +891,25 @@ html.resume-room #connectingScreen {
 }
 
 .viewer-canvas {
-  display: block;
+  display: none;
 }
 
 .remote-video {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0.01;
+  z-index: 2;
+  display: block;
+  opacity: 1;
   pointer-events: none;
   object-fit: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.remote-video::-webkit-media-controls,
+.remote-video::-webkit-media-controls-panel,
+.remote-video::-webkit-media-controls-start-playback-button {
+  display: none !important;
 }
 
 .remote-audio {

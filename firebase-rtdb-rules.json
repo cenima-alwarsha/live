@@ -23,7 +23,10 @@
           ".validate": "newData.isNumber()"
         },
         "film": {
-          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && (!newData.hasChild('source') || newData.child('source').val() === 'file' || (newData.child('source').val() === 'youtube' && newData.child('youtubeId').isString() && newData.child('youtubeId').val().matches(/^[A-Za-z0-9_-]{11}$/))))"
+          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && (!newData.hasChild('source') || newData.child('source').val() === 'file' || (newData.child('source').val() === 'youtube' && newData.child('youtubeId').isString() && newData.child('youtubeId').val().matches(/^[A-Za-z0-9_-]{11}$/)) || (newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//))))"
+        },
+        "nextFilm": {
+          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//))"
         },
         "sync": {
           ".validate": "newData.child('currentTime').isNumber() && newData.child('duration').isNumber() && newData.child('isPlaying').isBoolean() && newData.child('updatedAt').isNumber()"
