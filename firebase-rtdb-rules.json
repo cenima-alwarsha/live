@@ -29,7 +29,7 @@
           ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && (newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//) || newData.child('storagePath').val().matches(/^library\\/[A-Za-z0-9_-]{8,80}\\//)))"
         },
         "sync": {
-          ".validate": "newData.child('currentTime').isNumber() && newData.child('duration').isNumber() && newData.child('isPlaying').isBoolean() && newData.child('updatedAt').isNumber()"
+          ".validate": "newData.child('currentTime').isNumber() && newData.child('duration').isNumber() && newData.child('isPlaying').isBoolean() && (!newData.hasChild('isBuffering') || newData.child('isBuffering').isBoolean()) && newData.child('updatedAt').isNumber()"
         },
         "members": {
           "$memberId": {

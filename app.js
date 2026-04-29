@@ -161,6 +161,7 @@ const dom = {
   viewerFullscreenButton: document.getElementById("viewerFullscreenButton"),
   playUnlockOverlay: document.getElementById("playUnlockOverlay"),
   unlockPlaybackButton: document.getElementById("unlockPlaybackButton"),
+  bufferingOverlay: document.getElementById("bufferingOverlay"),
   hostControlsOverlay: document.getElementById("hostControlsOverlay"),
   hostMovieName: document.getElementById("hostMovieName"),
   hostTimeLabel: document.getElementById("hostTimeLabel"),
@@ -170,6 +171,7 @@ const dom = {
   hostFullscreenButton: document.getElementById("hostFullscreenButton"),
   replaceMovieButton: document.getElementById("replaceMovieButton"),
   hostSeekBar: document.getElementById("hostSeekBar"),
+  hostSeekTooltip: document.getElementById("hostSeekTooltip"),
   theaterChatOverlay: document.getElementById("theaterChatOverlay"),
   hostReloadNotice: document.getElementById("hostReloadNotice"),
   chatSection: document.getElementById("chatSection"),
@@ -235,6 +237,11 @@ const state = {
   viewerLoopFrame: null,
   viewerControlsTimer: null,
   hostControlsTimer: null,
+  hostSeekTooltipTimer: null,
+  hostSeekToken: 0,
+  hostSyncSuppressed: false,
+  localBuffering: false,
+  lastBufferingSyncAt: 0,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -410,6 +417,11 @@ function attachEvents() {
     setHostSeekProgress(dom.hostSeekBar.value);
     handleHostSeek();
   });
+  dom.hostSeekBar.addEventListener("pointerenter", handleHostSeekPreview);
+  dom.hostSeekBar.addEventListener("pointermove", handleHostSeekPreview);
+  dom.hostSeekBar.addEventListener("pointerleave", hideHostSeekPreview);
+  dom.hostSeekBar.addEventListener("pointercancel", hideHostSeekPreview);
+  dom.hostSeekBar.addEventListener("pointerdown", handleHostSeekPointerDown);
   document.addEventListener("fullscreenchange", handleFullscreenChange);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("pointerdown", handleSecretLibraryTap);
@@ -418,6 +430,10 @@ function attachEvents() {
     updateHostPlaybackUi();
     syncHostPlayback(true);
   });
+  dom.hostVideo.addEventListener("waiting", () => handleHostBufferingEvent(true));
+  dom.hostVideo.addEventListener("stalled", () => handleHostBufferingEvent(true));
+  dom.hostVideo.addEventListener("canplay", () => handleHostBufferingEvent(false));
+  dom.hostVideo.addEventListener("playing", () => handleHostBufferingEvent(false));
   dom.hostVideo.addEventListener("timeupdate", () => {
     updateHostPlaybackUi();
     syncHostPlayback(false);
@@ -444,7 +460,7 @@ function attachEvents() {
   });
 
   dom.remoteVideo.addEventListener("loadedmetadata", () => {
-    attemptRemotePlayback();
+    attemptRemotePlayback({ force: true });
     revealViewerControls();
     updateWaitingOverlay();
   });
@@ -464,7 +480,9 @@ function attachEvents() {
       toggleViewerControls();
       return;
     }
-    attemptRemotePlayback();
+    if (shouldAttemptViewerPlaybackOnTap()) {
+      attemptRemotePlayback();
+    }
     toggleViewerControls();
   });
 
@@ -612,6 +630,7 @@ async function createRoom(name) {
       currentTime: 0,
       duration: 0,
       isPlaying: false,
+      isBuffering: false,
       updatedAt: now,
     },
   });
@@ -733,6 +752,7 @@ function subscribeToRoom(roomId) {
     state.roomData = snapshot.val();
     updateRoomBadge();
     updateModeUi();
+    updateBufferingOverlay();
     updateWaitingOverlay();
     renderViewerTime(state.roomData.sync);
     handleRoomMediaUpdate().catch((error) => console.error("media update error", error));
@@ -928,6 +948,7 @@ function switchScreen(name) {
     closeJoinRoomModal();
     closeLibraryRenameModal();
     dom.theaterChatOverlay.innerHTML = "";
+    setLocalBuffering(false);
   }
 }
 
@@ -2027,6 +2048,7 @@ async function publishStorageMovieState(film) {
       currentTime: 0,
       duration: roundTime(film.duration || 0),
       isPlaying: false,
+      isBuffering: false,
       updatedAt: now,
     },
   };
@@ -2092,6 +2114,7 @@ async function playQueuedFilmIfReady() {
       currentTime: 0,
       duration: roundTime(nextFilm.duration || state.hostMedia.duration || 0),
       isPlaying: started,
+      isBuffering: false,
       updatedAt: now,
     },
   };
@@ -2247,6 +2270,7 @@ function resetHostMovieState() {
   state.hostCaptureStream = null;
   state.hostVideoTrack = null;
   state.localPrepared = false;
+  setLocalBuffering(false);
   state.hostMedia = {
     source: "",
     file: null,
@@ -2584,6 +2608,17 @@ async function applyStorageSync(sync = null, force = false, allowHost = false) {
     video.currentTime = targetTime;
   }
 
+  if (sync.isBuffering) {
+    video.pause();
+    dom.playUnlockOverlay.classList.add("hidden");
+    renderViewerTime({
+      currentTime: targetTime,
+      duration,
+    });
+    updateBufferingOverlay();
+    return;
+  }
+
   if (sync.isPlaying) {
     const started = await video.play().then(
       () => true,
@@ -2760,7 +2795,10 @@ async function applyYoutubeSync(sync = null, force = false, allowHost = false) {
       player.seekTo(targetTime, true);
     }
 
-    if (sync.isPlaying) {
+    if (sync.isBuffering) {
+      player.pauseVideo();
+      dom.playUnlockOverlay.classList.add("hidden");
+    } else if (sync.isPlaying) {
       player.playVideo();
       window.setTimeout(() => {
         if (!state.isHost && isYoutubeMode() && !isYoutubePlaying()) {
@@ -2858,6 +2896,7 @@ async function publishHostMovieState() {
       currentTime: 0,
       duration: roundTime(state.hostMedia.duration),
       isPlaying: false,
+      isBuffering: false,
       updatedAt: now,
     },
   };
@@ -2896,6 +2935,7 @@ async function publishYoutubeMovieState() {
       currentTime: 0,
       duration: roundTime(state.hostMedia.duration),
       isPlaying: false,
+      isBuffering: false,
       updatedAt: now,
     },
   };
@@ -2953,22 +2993,182 @@ function handleHostSeek() {
     return;
   }
 
-  if (isYoutubeMode()) {
-    const duration = getYoutubeDuration();
-    if (!duration || !state.youtubePlayer?.seekTo) {
-      return;
-    }
-    state.youtubePlayer.seekTo((Number(dom.hostSeekBar.value) / 100) * duration, true);
-    updateHostPlaybackUi();
-    syncHostPlayback(true);
-    return;
-  }
-
-  const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : 0;
+  const duration = getHostSeekDuration();
   if (!duration) {
     return;
   }
-  dom.hostVideo.currentTime = (Number(dom.hostSeekBar.value) / 100) * duration;
+
+  seekHostToTime((Number(dom.hostSeekBar.value) / 100) * duration).catch((error) =>
+    console.error("host seek failed", error)
+  );
+}
+
+function getHostSeekDuration() {
+  if (!state.isHost || !state.localPrepared) {
+    return 0;
+  }
+
+  if (isYoutubeMode()) {
+    return getYoutubeDuration() || state.hostMedia.duration || state.roomData?.sync?.duration || 0;
+  }
+
+  return Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : state.hostMedia.duration || 0;
+}
+
+async function seekHostToTime(time) {
+  const duration = getHostSeekDuration();
+  if (!duration) {
+    return;
+  }
+
+  const nextTime = clampTime(time, duration);
+  setHostSeekProgress((nextTime / duration) * 100);
+
+  if (isYoutubeMode()) {
+    await seekYoutubeHostToTime(nextTime, duration);
+    return;
+  }
+
+  await seekNativeHostToTime(nextTime, duration);
+}
+
+async function seekNativeHostToTime(nextTime, duration) {
+  const video = dom.hostVideo;
+  const wasPlaying = !video.paused && !video.ended;
+  const token = state.hostSeekToken + 1;
+  state.hostSeekToken = token;
+  state.hostSyncSuppressed = true;
+  setLocalBuffering(true);
+
+  try {
+    if (wasPlaying) {
+      video.pause();
+    }
+
+    video.currentTime = nextTime;
+    const seekedPromise = waitForSeekCompletion(video);
+    updateHostPlaybackUi();
+    await publishManualHostSync(nextTime, duration, false, true);
+
+    await seekedPromise.catch(() => {});
+    await Promise.race([waitForPlayable(video), wait(4500)]).catch(() => {});
+
+    if (state.hostSeekToken !== token) {
+      return;
+    }
+
+    if (wasPlaying) {
+      await prepareHostMovieAudio();
+      await video.play().catch(() => {
+        showToast("اضغط تشغيل بعد انتهاء تحميل المقطع.");
+      });
+    }
+  } finally {
+    if (state.hostSeekToken === token) {
+      state.hostSyncSuppressed = false;
+      setLocalBuffering(false);
+    }
+  }
+
+  updateHostPlaybackUi();
+  await syncHostPlayback(true);
+}
+
+async function seekYoutubeHostToTime(nextTime, duration) {
+  if (!state.youtubePlayer?.seekTo) {
+    return;
+  }
+
+  const wasPlaying = isYoutubePlaying();
+  const token = state.hostSeekToken + 1;
+  state.hostSeekToken = token;
+  state.hostSyncSuppressed = true;
+  setLocalBuffering(true);
+
+  try {
+    if (wasPlaying) {
+      state.youtubePlayer.pauseVideo();
+    }
+    state.youtubePlayer.seekTo(nextTime, true);
+    updateHostPlaybackUi();
+    await publishManualHostSync(nextTime, duration, false, true);
+    await wait(550);
+
+    if (state.hostSeekToken !== token) {
+      return;
+    }
+
+    if (wasPlaying) {
+      state.youtubePlayer.playVideo();
+      await wait(250);
+    }
+  } finally {
+    if (state.hostSeekToken === token) {
+      state.hostSyncSuppressed = false;
+      setLocalBuffering(false);
+    }
+  }
+
+  updateHostPlaybackUi();
+  await syncHostPlayback(true);
+}
+
+function getSeekPercentFromPointer(event, element = dom.hostSeekBar) {
+  const rect = element.getBoundingClientRect();
+  if (!rect.width) {
+    return 0;
+  }
+
+  const percent = ((event.clientX - rect.left) / rect.width) * 100;
+  return Math.min(Math.max(percent, 0), 100);
+}
+
+function handleHostSeekPointerDown(event) {
+  if (!state.isHost || !state.localPrepared) {
+    return;
+  }
+
+  revealHostControls();
+  const duration = getHostSeekDuration();
+  if (!duration) {
+    return;
+  }
+
+  const percent = getSeekPercentFromPointer(event);
+  const targetTime = (percent / 100) * duration;
+  showHostSeekPreview(percent, targetTime, event.pointerType !== "mouse");
+  seekHostToTime(targetTime).catch((error) => console.error("host seek failed", error));
+}
+
+function handleHostSeekPreview(event) {
+  if (!state.isHost || !state.localPrepared) {
+    return;
+  }
+
+  const duration = getHostSeekDuration();
+  if (!duration) {
+    hideHostSeekPreview();
+    return;
+  }
+
+  const percent = getSeekPercentFromPointer(event);
+  showHostSeekPreview(percent, (percent / 100) * duration, false);
+}
+
+function showHostSeekPreview(percent, time, autoHide = false) {
+  dom.hostSeekTooltip.textContent = formatDuration(time);
+  dom.hostSeekTooltip.style.left = `${Math.min(Math.max(percent, 3), 97)}%`;
+  dom.hostSeekTooltip.classList.remove("hidden");
+
+  clearTimeout(state.hostSeekTooltipTimer);
+  if (autoHide) {
+    state.hostSeekTooltipTimer = window.setTimeout(hideHostSeekPreview, 900);
+  }
+}
+
+function hideHostSeekPreview() {
+  clearTimeout(state.hostSeekTooltipTimer);
+  dom.hostSeekTooltip.classList.add("hidden");
 }
 
 function skipHostBy(seconds) {
@@ -2979,16 +3179,14 @@ function skipHostBy(seconds) {
   if (isYoutubeMode()) {
     const duration = getYoutubeDuration();
     const nextTime = clampTime(getYoutubeCurrentTime() + seconds, duration);
-    state.youtubePlayer?.seekTo?.(nextTime, true);
-    updateHostPlaybackUi();
-    syncHostPlayback(true);
+    seekHostToTime(nextTime).catch((error) => console.error("youtube skip failed", error));
     return;
   }
 
   const duration = Number.isFinite(dom.hostVideo.duration) ? dom.hostVideo.duration : state.hostMedia.duration || 0;
-  dom.hostVideo.currentTime = clampTime((dom.hostVideo.currentTime || 0) + seconds, duration);
-  updateHostPlaybackUi();
-  syncHostPlayback(true);
+  seekHostToTime(clampTime((dom.hostVideo.currentTime || 0) + seconds, duration)).catch((error) =>
+    console.error("host skip failed", error)
+  );
 }
 
 async function toggleHostPlayback() {
@@ -3026,6 +3224,10 @@ async function syncHostPlayback(force = false) {
     return;
   }
 
+  if (state.hostSyncSuppressed) {
+    return;
+  }
+
   if (isYoutubeMode()) {
     return syncYoutubeHostPlayback(force);
   }
@@ -3037,6 +3239,7 @@ async function syncHostPlayback(force = false) {
     currentTime: roundTime(currentTime),
     duration: roundTime(duration),
     isPlaying: !dom.hostVideo.paused && !dom.hostVideo.ended,
+    isBuffering: false,
     updatedAt: now,
   };
 
@@ -3062,6 +3265,36 @@ async function syncHostPlayback(force = false) {
   update(ref(db, `rooms/${state.roomId}`), roomUpdate).catch((error) => console.error("sync error", error));
 }
 
+async function publishManualHostSync(currentTime, duration, isPlaying, isBuffering = false) {
+  if (!state.isHost || !state.roomId) {
+    return;
+  }
+
+  const now = Date.now();
+  const payload = {
+    currentTime: roundTime(currentTime),
+    duration: roundTime(duration),
+    isPlaying: Boolean(isPlaying),
+    isBuffering: Boolean(isBuffering),
+    updatedAt: now,
+  };
+  const sourceKey = isYoutubeMode() ? "youtube" : "storage";
+  state.lastSyncSignature = JSON.stringify({ source: sourceKey, ...payload });
+  state.lastSyncSentAt = now;
+
+  const roomUpdate = {
+    status: "live",
+    sync: payload,
+    film: buildHostFilmPayloadForSync(duration, now),
+    lastActivity: now,
+  };
+
+  await Promise.allSettled([
+    update(ref(db, `rooms/${state.roomId}`), roomUpdate),
+    touchRoomIndex(state.roomId, now),
+  ]);
+}
+
 async function syncYoutubeHostPlayback(force = false) {
   const duration = getYoutubeDuration();
   const currentTime = getYoutubeCurrentTime();
@@ -3070,6 +3303,7 @@ async function syncYoutubeHostPlayback(force = false) {
     currentTime: roundTime(currentTime),
     duration: roundTime(duration),
     isPlaying: isYoutubePlaying(),
+    isBuffering: false,
     updatedAt: now,
   };
 
@@ -3126,12 +3360,62 @@ function buildCurrentHostFilmPayload(duration, now = Date.now()) {
   };
 }
 
+function buildHostFilmPayloadForSync(duration, now = Date.now()) {
+  if (isYoutubeMode()) {
+    return {
+      source: "youtube",
+      name: getActiveFilm()?.name || state.hostMedia.name || "YouTube",
+      size: 0,
+      duration: roundTime(duration),
+      youtubeId: getActiveFilm()?.youtubeId || state.hostMedia.youtubeId,
+      url: state.hostMedia.youtubeUrl || getActiveFilm()?.url || "",
+      preparedAt: state.roomData?.film?.preparedAt || now,
+    };
+  }
+
+  return buildCurrentHostFilmPayload(duration, now);
+}
+
 function renderViewerTime(sync = null) {
   const currentTime = sync?.currentTime || 0;
   const duration = sync?.duration || 0;
   dom.viewerCurrentTime.textContent = formatDuration(currentTime);
   dom.viewerRemainingTime.textContent = `- ${formatDuration(Math.max(duration - currentTime, 0))}`;
   setViewerSeekProgress(duration ? (currentTime / duration) * 100 : 0);
+}
+
+function setLocalBuffering(isBuffering) {
+  state.localBuffering = Boolean(isBuffering);
+  updateBufferingOverlay();
+}
+
+function updateBufferingOverlay() {
+  const roomBuffering = Boolean(state.roomData?.sync?.isBuffering);
+  const shouldShow = state.screen === "room" && (state.localBuffering || (!state.isHost && roomBuffering));
+  dom.bufferingOverlay.classList.toggle("hidden", !shouldShow);
+}
+
+function handleHostBufferingEvent(isBuffering) {
+  if (!state.isHost || !state.localPrepared || !state.roomId || state.hostSyncSuppressed || isYoutubeMode()) {
+    return;
+  }
+
+  setLocalBuffering(isBuffering);
+
+  const now = Date.now();
+  if (isBuffering) {
+    if (now - state.lastBufferingSyncAt < 900) {
+      return;
+    }
+    state.lastBufferingSyncAt = now;
+    const duration = getHostSeekDuration();
+    publishManualHostSync(dom.hostVideo.currentTime || 0, duration, false, true).catch((error) =>
+      console.error("buffering sync error", error)
+    );
+    return;
+  }
+
+  syncHostPlayback(true);
 }
 
 function updateWaitingOverlay() {
@@ -4318,6 +4602,22 @@ function toggleViewerControls() {
   }
 }
 
+function shouldAttemptViewerPlaybackOnTap() {
+  if (state.isHost) {
+    return false;
+  }
+
+  if (!dom.playUnlockOverlay.classList.contains("hidden")) {
+    return true;
+  }
+
+  if (!isStorageMode()) {
+    return false;
+  }
+
+  return Boolean(state.roomData?.sync?.isPlaying && dom.remoteVideo.paused);
+}
+
 function revealViewerControls() {
   if (state.isHost) {
     return;
@@ -4447,15 +4747,17 @@ function isExpandedPlayer() {
   return !!document.fullscreenElement || document.body.classList.contains("theater-mode");
 }
 
-async function attemptRemotePlayback() {
+async function attemptRemotePlayback(options = {}) {
+  const force = Boolean(options.force);
+
   if (isYoutubeMode()) {
-    await applyYoutubeSync(state.roomData?.sync, false);
+    await applyYoutubeSync(state.roomData?.sync, force);
     dom.playUnlockOverlay.classList.add("hidden");
     return;
   }
 
   if (isStorageMode()) {
-    await applyStorageSync(state.roomData?.sync, true);
+    await applyStorageSync(state.roomData?.sync, force);
     return;
   }
 
@@ -4925,6 +5227,26 @@ async function waitForPlayable(video) {
     return;
   }
   await waitForVideoReady(video, "canplay");
+}
+
+function waitForSeekCompletion(video, timeout = 4500) {
+  if (!video.seeking && video.readyState >= 2) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(cleanup, timeout);
+    const onReady = () => cleanup();
+    const cleanup = () => {
+      clearTimeout(timer);
+      video.removeEventListener("seeked", onReady);
+      video.removeEventListener("canplay", onReady);
+      resolve();
+    };
+
+    video.addEventListener("seeked", onReady, { once: true });
+    video.addEventListener("canplay", onReady, { once: true });
+  });
 }
 
 function openHostMediaDb() {

@@ -410,12 +410,18 @@
                   </button>
 
                   <input id="hostSeekBar" class="seek-bar" type="range" min="0" max="100" value="0" />
+                  <div id="hostSeekTooltip" class="seek-tooltip hidden">00:00</div>
                 </div>
 
                 <div id="playUnlockOverlay" class="play-unlock-overlay hidden">
                   <button id="unlockPlaybackButton" class="primary-button" type="button">
                     اضغط لبدء البث
                   </button>
+                </div>
+
+                <div id="bufferingOverlay" class="buffering-overlay hidden" aria-live="polite">
+                  <div class="buffering-spinner" aria-hidden="true"></div>
+                  <div class="buffering-label">جاري التحميل</div>
                 </div>
 
                 <div id="theaterChatOverlay" class="theater-chat-overlay" aria-live="polite"></div>

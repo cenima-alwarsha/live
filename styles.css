@@ -1069,6 +1069,51 @@ html.resume-room #connectingScreen {
   backdrop-filter: blur(14px);
 }
 
+.buffering-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at center, rgba(4, 9, 16, 0.42), transparent 34%),
+    rgba(2, 6, 11, 0.12);
+  backdrop-filter: blur(2px);
+}
+
+.buffering-spinner {
+  width: clamp(48px, 10vw, 68px);
+  height: clamp(48px, 10vw, 68px);
+  border-radius: 50%;
+  background:
+    conic-gradient(from 0deg, rgba(214, 181, 106, 0), rgba(214, 181, 106, 0.22), #f4dca0),
+    radial-gradient(circle, rgba(4, 9, 16, 0.92) 58%, transparent 60%);
+  box-shadow:
+    0 0 0 1px rgba(214, 181, 106, 0.18),
+    0 18px 46px rgba(0, 0, 0, 0.34),
+    0 0 38px rgba(214, 181, 106, 0.22);
+  animation: buffering-spin 820ms linear infinite;
+}
+
+.buffering-label {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 181, 106, 0.2);
+  background: rgba(4, 9, 16, 0.68);
+  color: var(--cream);
+  font-weight: 900;
+  font-size: 0.84rem;
+}
+
+@keyframes buffering-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
 .waiting-state h3 {
   margin: 0;
   font-family: "Changa", sans-serif;
@@ -1210,16 +1255,11 @@ html.resume-room #connectingScreen {
   -webkit-appearance: none;
   accent-color: var(--gold);
   direction: ltr;
-  height: 5px;
+  height: 18px;
   border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    rgba(214, 181, 106, 0.95) 0%,
-    rgba(214, 181, 106, 0.95) var(--seek-progress),
-    rgba(255, 255, 255, 0.18) var(--seek-progress),
-    rgba(255, 255, 255, 0.18) 100%
-  );
+  background: transparent;
   border: 0;
+  cursor: pointer;
 }
 
 .seek-bar::-webkit-slider-runnable-track {
@@ -1264,6 +1304,23 @@ html.resume-room #connectingScreen {
   border-radius: 50%;
   background: linear-gradient(180deg, #f8e5b6, #d6b56a);
   box-shadow: 0 4px 20px rgba(214, 181, 106, 0.45);
+}
+
+.seek-tooltip {
+  position: absolute;
+  bottom: 38px;
+  z-index: 10;
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 10px;
+  background: rgba(4, 9, 16, 0.86);
+  border: 1px solid rgba(214, 181, 106, 0.24);
+  color: var(--cream);
+  font-size: 0.78rem;
+  font-weight: 900;
+  direction: ltr;
+  pointer-events: none;
+  backdrop-filter: blur(14px);
 }
 
 .viewer-seek-bar {
