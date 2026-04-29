@@ -122,6 +122,9 @@
               <button id="leaveJoinLinkButton" class="danger-button join-room-button hidden" type="button">
                 خروج
               </button>
+              <button id="openLibraryButton" class="secondary-button join-room-button hidden" type="button">
+                المكتبة
+              </button>
             </div>
           </div>
         </section>
@@ -145,6 +148,10 @@
               <span class="upload-icon">+</span>
               <span class="upload-title">تحميل فيديو</span>
             </label>
+
+            <button id="chooseLibraryButton" class="secondary-button library-choice-button" type="button">
+              الاختيار من المكتبة
+            </button>
 
             <form id="youtubeForm" class="youtube-form">
               <div class="youtube-input-wrap">
@@ -179,6 +186,36 @@
                 <div id="uploadProgressBar" class="progress-fill"></div>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section id="libraryScreen" class="screen">
+          <div class="library-layout panel">
+            <div class="library-header">
+              <button id="libraryBackButton" class="secondary-button upload-back-button" type="button">
+                رجوع
+              </button>
+              <h2 id="libraryTitle" class="section-title">المكتبة</h2>
+              <button id="addLibraryVideoButton" class="primary-button library-add-button" type="button">
+                إضافة فيديو إلى المكتبة
+              </button>
+              <input id="libraryFileInput" type="file" accept="video/*,.mkv,.mp4,.mov,.webm" hidden />
+            </div>
+
+            <div id="libraryUploadStatusCard" class="upload-status hidden">
+              <div class="upload-meta">
+                <div>
+                  <div id="libraryUploadFileName" class="upload-file-name">جارٍ التحضير...</div>
+                  <div id="libraryUploadProgressLabel" class="upload-progress-label">0%</div>
+                </div>
+                <div id="libraryUploadSpeedLabel" class="upload-speed-label">جاري الفحص</div>
+              </div>
+              <div class="progress-track">
+                <div id="libraryUploadProgressBar" class="progress-fill"></div>
+              </div>
+            </div>
+
+            <div id="libraryList" class="library-list"></div>
           </div>
         </section>
 
@@ -488,6 +525,25 @@
           <button id="confirmCancelButton" class="secondary-button" type="button">إلغاء</button>
           <button id="confirmApproveButton" class="primary-button" type="button">موافق</button>
         </div>
+      </div>
+    </div>
+
+    <div id="libraryRenameModal" class="modal hidden">
+      <div class="modal-card panel join-modal-card">
+        <button id="closeLibraryRenameButton" class="drawer-close" type="button" aria-label="إغلاق">×</button>
+        <h3 class="modal-title">تعديل الاسم</h3>
+        <form id="libraryRenameForm" class="join-room-form">
+          <input
+            id="libraryRenameInput"
+            class="text-input"
+            type="text"
+            maxlength="80"
+            placeholder="اسم الفيديو"
+            autocomplete="off"
+            aria-label="اسم الفيديو"
+          />
+          <button class="primary-button full-width" type="submit">حفظ</button>
+        </form>
       </div>
     </div>
 

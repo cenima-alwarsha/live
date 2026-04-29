@@ -23,10 +23,10 @@
           ".validate": "newData.isNumber()"
         },
         "film": {
-          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && (!newData.hasChild('source') || newData.child('source').val() === 'file' || (newData.child('source').val() === 'youtube' && newData.child('youtubeId').isString() && newData.child('youtubeId').val().matches(/^[A-Za-z0-9_-]{11}$/)) || (newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//))))"
+          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && (!newData.hasChild('source') || newData.child('source').val() === 'file' || (newData.child('source').val() === 'youtube' && newData.child('youtubeId').isString() && newData.child('youtubeId').val().matches(/^[A-Za-z0-9_-]{11}$/)) || (newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && (newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//) || newData.child('storagePath').val().matches(/^library\\/[A-Za-z0-9_-]{8,80}\\//)))))"
         },
         "nextFilm": {
-          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//))"
+          ".validate": "newData.val() === null || (newData.child('name').isString() && newData.child('size').isNumber() && newData.child('duration').isNumber() && newData.child('source').val() === 'storage' && newData.child('storagePath').isString() && (newData.child('storagePath').val().matches(/^rooms\\/[0-9]{4}\\//) || newData.child('storagePath').val().matches(/^library\\/[A-Za-z0-9_-]{8,80}\\//)))"
         },
         "sync": {
           ".validate": "newData.child('currentTime').isNumber() && newData.child('duration').isNumber() && newData.child('isPlaying').isBoolean() && newData.child('updatedAt').isNumber()"
@@ -58,6 +58,13 @@
         "lastActivity": {
           ".validate": "newData.isNumber()"
         }
+      }
+    },
+    "library": {
+      ".read": true,
+      "$itemId": {
+        ".write": "$itemId.matches(/^[A-Za-z0-9_-]{8,80}$/)",
+        ".validate": "newData.val() === null || (newData.hasChildren(['id','source','storageOwner','name','size','duration','storagePath','url','contentType','createdAt','updatedAt']) && newData.child('id').val() === $itemId && newData.child('source').val() === 'storage' && newData.child('storageOwner').val() === 'library' && newData.child('name').isString() && newData.child('name').val().length <= 80 && newData.child('size').isNumber() && newData.child('duration').isNumber() && newData.child('storagePath').isString() && newData.child('storagePath').val().matches(/^library\\/[A-Za-z0-9_-]{8,80}\\//) && newData.child('url').isString() && newData.child('contentType').isString() && newData.child('createdAt').isNumber() && newData.child('updatedAt').isNumber())"
       }
     }
   }

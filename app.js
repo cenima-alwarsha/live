@@ -42,6 +42,9 @@ const YOUTUBE_SEARCH_API_KEY = firebaseConfig.apiKey;
 const IDLE_ROOM_TTL_MS = 30 * 60 * 1000;
 const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
 const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
+const SECRET_LIBRARY_TAPS = 5;
+const SECRET_LIBRARY_TAP_WINDOW_MS = 1200;
+const MAX_VIDEO_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024;
 const HOST_VIDEO_MAX_FRAMERATE = 30;
 const HOST_VIDEO_HIGH_BITRATE = 8_000_000;
 const HOST_VIDEO_MEDIUM_BITRATE = 5_000_000;
@@ -88,6 +91,7 @@ const dom = {
   connectingScreen: document.getElementById("connectingScreen"),
   homeScreen: document.getElementById("homeScreen"),
   uploadScreen: document.getElementById("uploadScreen"),
+  libraryScreen: document.getElementById("libraryScreen"),
   roomScreen: document.getElementById("roomScreen"),
   homeHeading: document.getElementById("homeHeading"),
   homeSubtitle: document.getElementById("homeSubtitle"),
@@ -97,6 +101,7 @@ const dom = {
   identitySubmitButton: document.getElementById("identitySubmitButton"),
   openJoinRoomButton: document.getElementById("openJoinRoomButton"),
   leaveJoinLinkButton: document.getElementById("leaveJoinLinkButton"),
+  openLibraryButton: document.getElementById("openLibraryButton"),
   joinRoomModal: document.getElementById("joinRoomModal"),
   joinRoomForm: document.getElementById("joinRoomForm"),
   joinRoomInput: document.getElementById("joinRoomInput"),
@@ -110,6 +115,17 @@ const dom = {
   uploadHint: document.getElementById("uploadHint"),
   uploadBackButton: document.getElementById("uploadBackButton"),
   cancelRoomButton: document.getElementById("cancelRoomButton"),
+  chooseLibraryButton: document.getElementById("chooseLibraryButton"),
+  libraryTitle: document.getElementById("libraryTitle"),
+  libraryBackButton: document.getElementById("libraryBackButton"),
+  addLibraryVideoButton: document.getElementById("addLibraryVideoButton"),
+  libraryFileInput: document.getElementById("libraryFileInput"),
+  libraryUploadStatusCard: document.getElementById("libraryUploadStatusCard"),
+  libraryUploadFileName: document.getElementById("libraryUploadFileName"),
+  libraryUploadProgressLabel: document.getElementById("libraryUploadProgressLabel"),
+  libraryUploadSpeedLabel: document.getElementById("libraryUploadSpeedLabel"),
+  libraryUploadProgressBar: document.getElementById("libraryUploadProgressBar"),
+  libraryList: document.getElementById("libraryList"),
   youtubeForm: document.getElementById("youtubeForm"),
   youtubeUrlInput: document.getElementById("youtubeUrlInput"),
   youtubeSubmitButton: document.getElementById("youtubeSubmitButton"),
@@ -183,6 +199,10 @@ const dom = {
   confirmMessage: document.getElementById("confirmMessage"),
   confirmCancelButton: document.getElementById("confirmCancelButton"),
   confirmApproveButton: document.getElementById("confirmApproveButton"),
+  libraryRenameModal: document.getElementById("libraryRenameModal"),
+  closeLibraryRenameButton: document.getElementById("closeLibraryRenameButton"),
+  libraryRenameForm: document.getElementById("libraryRenameForm"),
+  libraryRenameInput: document.getElementById("libraryRenameInput"),
   toast: document.getElementById("toast"),
 };
 
@@ -242,6 +262,13 @@ const state = {
   youtubeSearchLoading: false,
   youtubeSearchHasMore: false,
   youtubeSearchVideoIds: new Set(),
+  libraryItems: [],
+  libraryReturnScreen: "home",
+  librarySelectMode: false,
+  libraryRenameItemId: "",
+  libraryTapCount: 0,
+  lastLibraryTapAt: 0,
+  libraryUnlocked: false,
   movieSourceNode: null,
   movieMonitorConnected: false,
   hostMicTrack: null,
@@ -327,12 +354,19 @@ function attachEvents() {
   dom.identityForm.addEventListener("submit", handleIdentitySubmit);
   dom.openJoinRoomButton.addEventListener("click", openJoinRoomModal);
   dom.leaveJoinLinkButton.addEventListener("click", leaveJoinLinkPage);
+  dom.openLibraryButton.addEventListener("click", openLibraryFromHome);
   dom.closeJoinRoomButton.addEventListener("click", closeJoinRoomModal);
   dom.joinRoomForm.addEventListener("submit", handleJoinRoomSubmit);
   dom.joinRoomInput.addEventListener("input", handleJoinRoomInput);
   dom.movieFileInput.addEventListener("change", handleMovieFileChange);
   dom.uploadBackButton.addEventListener("click", returnToRoomFromUpload);
   dom.cancelRoomButton.addEventListener("click", handleCancelRoom);
+  dom.chooseLibraryButton.addEventListener("click", openLibraryPicker);
+  dom.libraryBackButton.addEventListener("click", handleLibraryBack);
+  dom.addLibraryVideoButton.addEventListener("click", () => dom.libraryFileInput.click());
+  dom.libraryFileInput.addEventListener("change", handleLibraryFileChange);
+  dom.closeLibraryRenameButton.addEventListener("click", closeLibraryRenameModal);
+  dom.libraryRenameForm.addEventListener("submit", handleLibraryRenameSubmit);
   dom.youtubeForm.addEventListener("submit", handleYoutubeSubmit);
   dom.youtubeUrlInput.addEventListener("input", handleYoutubeInput);
   dom.youtubeSearchResults.addEventListener("scroll", handleYoutubeResultsScroll);
@@ -378,6 +412,7 @@ function attachEvents() {
   });
   document.addEventListener("fullscreenchange", handleFullscreenChange);
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  document.addEventListener("pointerdown", handleSecretLibraryTap);
 
   dom.hostVideo.addEventListener("loadedmetadata", () => {
     updateHostPlaybackUi();
@@ -451,6 +486,12 @@ function attachEvents() {
       event.target === dom.joinRoomModal
     ) {
       closeJoinRoomModal();
+    }
+    if (
+      !dom.libraryRenameModal.classList.contains("hidden") &&
+      event.target === dom.libraryRenameModal
+    ) {
+      closeLibraryRenameModal();
     }
   });
 
@@ -788,7 +829,10 @@ async function deleteRoomById(roomId) {
 
   const roomSnapshot = await get(ref(db, `rooms/${roomId}`)).catch(() => null);
   const roomData = roomSnapshot?.exists() ? roomSnapshot.val() : null;
-  const storagePaths = [roomData?.film?.storagePath, roomData?.nextFilm?.storagePath].filter(Boolean);
+  const storagePaths = [
+    getDeletableStoragePath(roomData?.film),
+    getDeletableStoragePath(roomData?.nextFilm),
+  ].filter(Boolean);
 
   await Promise.allSettled([
     remove(ref(db, `rooms/${roomId}`)),
@@ -866,6 +910,7 @@ function switchScreen(name) {
   dom.connectingScreen.classList.toggle("active", name === "connecting");
   dom.homeScreen.classList.toggle("active", name === "home");
   dom.uploadScreen.classList.toggle("active", name === "upload");
+  dom.libraryScreen.classList.toggle("active", name === "library");
   dom.roomScreen.classList.toggle("active", name === "room");
   syncUploadBackButton();
   updateModeUi();
@@ -881,6 +926,7 @@ function switchScreen(name) {
     closeDrawer();
     closeMembersDrawer();
     closeJoinRoomModal();
+    closeLibraryRenameModal();
     dom.theaterChatOverlay.innerHTML = "";
   }
 }
@@ -926,7 +972,7 @@ function openMediaChooser() {
     state.pendingUploadMode = "queue";
     resetUploadProgress();
     dom.hostMenuPanel.classList.add("hidden");
-    dom.movieFileInput.click();
+    switchScreen("upload");
     showToast("اختر الفيلم التالي.");
     return;
   }
@@ -1032,12 +1078,404 @@ async function handleMovieFileChange(event) {
   }
 }
 
+function handleSecretLibraryTap(event) {
+  if (state.screen !== "home") {
+    return;
+  }
+
+  if (event.target.closest("button, input, textarea, a, label, .modal, .drawer")) {
+    return;
+  }
+
+  const now = Date.now();
+  state.libraryTapCount = now - state.lastLibraryTapAt <= SECRET_LIBRARY_TAP_WINDOW_MS
+    ? state.libraryTapCount + 1
+    : 1;
+  state.lastLibraryTapAt = now;
+
+  if (state.libraryTapCount < SECRET_LIBRARY_TAPS) {
+    return;
+  }
+
+  state.libraryTapCount = 0;
+  state.libraryUnlocked = true;
+  dom.openLibraryButton.classList.remove("hidden");
+  showToast("ظهرت المكتبة.");
+}
+
+function hideSecretLibraryButton() {
+  state.libraryUnlocked = false;
+  state.libraryTapCount = 0;
+  dom.openLibraryButton.classList.add("hidden");
+}
+
+async function openLibraryFromHome() {
+  state.libraryReturnScreen = "home";
+  state.librarySelectMode = false;
+  await openLibraryScreen();
+}
+
+async function openLibraryPicker() {
+  if (!state.isHost || !state.roomId) {
+    return;
+  }
+
+  state.libraryReturnScreen = "upload";
+  state.librarySelectMode = true;
+  await openLibraryScreen();
+}
+
+async function openLibraryScreen() {
+  resetLibraryUploadProgress();
+  closeJoinRoomModal();
+  closeLibraryRenameModal();
+  updateLibraryHeading();
+  switchScreen("library");
+  await loadLibraryItems();
+}
+
+function handleLibraryBack() {
+  closeLibraryRenameModal();
+  if (state.libraryReturnScreen === "upload" && state.roomId) {
+    state.librarySelectMode = false;
+    switchScreen("upload");
+    return;
+  }
+
+  state.librarySelectMode = false;
+  hideSecretLibraryButton();
+  switchScreen("home");
+}
+
+function updateLibraryHeading() {
+  dom.libraryTitle.textContent = "المكتبة";
+}
+
+async function handleLibraryFileChange(event) {
+  const [file] = event.target.files || [];
+  if (!file) {
+    return;
+  }
+
+  let uploadedItem = null;
+  try {
+    uploadedItem = await uploadLibraryMovie(file);
+    await set(ref(db, `library/${uploadedItem.id}`), uploadedItem);
+    showToast("تمت إضافة الفيديو إلى المكتبة.");
+    await loadLibraryItems();
+  } catch (error) {
+    if (uploadedItem?.storagePath) {
+      deleteStorageFile(uploadedItem.storagePath).catch((deleteError) => {
+        console.warn("library orphan cleanup failed", deleteError);
+      });
+    }
+    console.error(error);
+    showToast(getFriendlyErrorMessage(error));
+  } finally {
+    dom.libraryFileInput.value = "";
+  }
+}
+
+async function uploadLibraryMovie(file) {
+  if (!file.type.startsWith("video/") && !/\.(mkv|mp4|mov|webm)$/i.test(file.name)) {
+    throw new Error("اختر ملف فيديو صالحاً.");
+  }
+
+  if (file.size >= MAX_VIDEO_UPLOAD_SIZE) {
+    throw new Error("حجم الفيديو أكبر من الحد المسموح.");
+  }
+
+  const itemId = createLibraryItemId();
+  const safeName = sanitizeStorageFileName(file.name || "movie.mp4");
+  const path = `library/${itemId}/${Date.now()}-${safeName}`;
+  const fileRef = storageRef(storage, path);
+  const startedAt = performance.now();
+  const metadataPromise = readLocalVideoMetadata(file);
+  const uploadTask = uploadBytesResumable(fileRef, file, {
+    contentType: file.type || "video/mp4",
+    cacheControl: "public,max-age=31536000",
+    customMetadata: {
+      libraryItemId: itemId,
+      originalName: file.name || "movie",
+    },
+  });
+
+  setLibraryUploadProgress(2, file.name, "بدء الرفع");
+
+  const snapshot = await new Promise((resolve, reject) => {
+    uploadTask.on(
+      "state_changed",
+      (uploadSnapshot) => {
+        const percent = uploadSnapshot.totalBytes
+          ? (uploadSnapshot.bytesTransferred / uploadSnapshot.totalBytes) * 100
+          : 0;
+        const elapsed = Math.max((performance.now() - startedAt) / 1000, 0.25);
+        const speed = uploadSnapshot.bytesTransferred / elapsed;
+        setLibraryUploadProgress(
+          Math.max(2, Math.min(percent, 99)),
+          file.name,
+          `${formatBytes(uploadSnapshot.bytesTransferred)} / ${formatBytes(uploadSnapshot.totalBytes)} · ${formatBytes(speed)}/ث`
+        );
+      },
+      reject,
+      () => resolve(uploadTask.snapshot)
+    );
+  });
+
+  const [localMetadata, url] = await Promise.all([
+    metadataPromise,
+    getDownloadURL(snapshot.ref),
+  ]);
+  const now = Date.now();
+
+  setLibraryUploadProgress(100, file.name, "تم الحفظ");
+
+  return {
+    id: itemId,
+    source: "storage",
+    storageOwner: "library",
+    name: file.name || "movie",
+    size: file.size || 0,
+    duration: roundTime(localMetadata.duration || 0),
+    storagePath: path,
+    url,
+    contentType: file.type || "video/mp4",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function loadLibraryItems() {
+  dom.libraryList.innerHTML = `<div class="library-message">جاري تحميل المكتبة...</div>`;
+
+  const snapshot = await get(ref(db, "library")).catch((error) => {
+    console.error("library load failed", error);
+    return null;
+  });
+
+  if (!snapshot) {
+    dom.libraryList.innerHTML = `<div class="library-message">تعذر تحميل المكتبة.</div>`;
+    return;
+  }
+
+  if (!snapshot?.exists()) {
+    state.libraryItems = [];
+    renderLibraryItems();
+    return;
+  }
+
+  const items = [];
+  snapshot.forEach((child) => {
+    items.push(normalizeLibraryItem(child.key, child.val()));
+  });
+
+  state.libraryItems = items
+    .filter((item) => item.id && item.storagePath)
+    .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+  renderLibraryItems();
+}
+
+function normalizeLibraryItem(id, value = {}) {
+  return {
+    id,
+    source: "storage",
+    storageOwner: "library",
+    name: sanitizeLibraryName(value.name || "فيديو"),
+    size: Number(value.size || 0),
+    duration: Number(value.duration || 0),
+    storagePath: value.storagePath || "",
+    url: value.url || "",
+    contentType: value.contentType || "video/mp4",
+    createdAt: Number(value.createdAt || 0),
+    updatedAt: Number(value.updatedAt || value.createdAt || 0),
+  };
+}
+
+function renderLibraryItems() {
+  dom.libraryList.innerHTML = "";
+
+  if (!state.libraryItems.length) {
+    const message = document.createElement("div");
+    message.className = "library-message";
+    message.textContent = "المكتبة فارغة.";
+    dom.libraryList.append(message);
+    return;
+  }
+
+  state.libraryItems.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "library-card";
+
+    const info = document.createElement("div");
+    info.className = "library-card-info";
+
+    const title = document.createElement("div");
+    title.className = "library-card-title";
+    title.textContent = item.name;
+
+    const meta = document.createElement("div");
+    meta.className = "library-card-meta";
+    meta.textContent = [formatDuration(item.duration), formatBytes(item.size)].filter(Boolean).join(" · ");
+
+    info.append(title, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "library-card-actions";
+
+    if (state.librarySelectMode) {
+      const selectButton = document.createElement("button");
+      selectButton.className = "primary-button library-card-button";
+      selectButton.type = "button";
+      selectButton.textContent = "اختيار";
+      selectButton.addEventListener("click", () => selectLibraryMovie(item));
+      actions.append(selectButton);
+    }
+
+    const renameButton = document.createElement("button");
+    renameButton.className = "secondary-button library-card-button";
+    renameButton.type = "button";
+    renameButton.textContent = "تعديل الاسم";
+    renameButton.addEventListener("click", () => openLibraryRenameModal(item));
+
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "danger-button library-card-button";
+    deleteButton.type = "button";
+    deleteButton.textContent = "حذف";
+    deleteButton.addEventListener("click", () => deleteLibraryItem(item));
+
+    actions.append(renameButton, deleteButton);
+    card.append(info, actions);
+    dom.libraryList.append(card);
+  });
+}
+
+async function selectLibraryMovie(item) {
+  if (!state.isHost || !state.roomId) {
+    return;
+  }
+
+  const mode = state.pendingUploadMode === "queue" || shouldQueueNextUpload() ? "queue" : "replace";
+  state.pendingUploadMode = "";
+
+  try {
+    await prepareLibraryMovie(item, { mode });
+  } catch (error) {
+    console.error(error);
+    showToast(getFriendlyErrorMessage(error));
+  }
+}
+
+async function prepareLibraryMovie(item, options = {}) {
+  const film = buildFilmFromLibraryItem(item);
+  const mode = options.mode === "queue" ? "queue" : "replace";
+  state.librarySelectMode = false;
+
+  if (mode === "queue") {
+    await publishQueuedMovieState(film);
+    switchScreen("room");
+    updateModeUi();
+    revealHostControls();
+    showToast("تم تجهيز فيديو المكتبة كالفيلم التالي.");
+    return;
+  }
+
+  cleanupViewerReconnect();
+  resetHostMovieState();
+  closeAllPeers();
+
+  await loadHostStorageMovie(film);
+  await publishStorageMovieState(film);
+
+  switchScreen("room");
+  updateModeUi();
+  updateHostPlaybackUi();
+  updateWaitingOverlay();
+  revealHostControls();
+  await flushPendingViewers();
+  showToast("تم اختيار الفيديو من المكتبة.");
+}
+
+function buildFilmFromLibraryItem(item) {
+  return {
+    source: "storage",
+    storageOwner: "library",
+    libraryItemId: item.id,
+    name: item.name || "فيديو من المكتبة",
+    size: Number(item.size || 0),
+    duration: roundTime(Number(item.duration || 0)),
+    storagePath: item.storagePath || "",
+    url: item.url || "",
+    contentType: item.contentType || "video/mp4",
+    preparedAt: Date.now(),
+  };
+}
+
+function openLibraryRenameModal(item) {
+  state.libraryRenameItemId = item.id;
+  dom.libraryRenameInput.value = item.name || "";
+  dom.libraryRenameModal.classList.remove("hidden");
+  window.setTimeout(() => dom.libraryRenameInput.focus(), 0);
+}
+
+function closeLibraryRenameModal() {
+  dom.libraryRenameModal.classList.add("hidden");
+  state.libraryRenameItemId = "";
+}
+
+async function handleLibraryRenameSubmit(event) {
+  event.preventDefault();
+  const itemId = state.libraryRenameItemId;
+  const name = sanitizeLibraryName(dom.libraryRenameInput.value);
+  if (!itemId || !name) {
+    showToast("اكتب اسم الفيديو.");
+    return;
+  }
+
+  try {
+    await update(ref(db, `library/${itemId}`), {
+      name,
+      updatedAt: Date.now(),
+    });
+    closeLibraryRenameModal();
+    showToast("تم تعديل الاسم.");
+    await loadLibraryItems();
+  } catch (error) {
+    console.error(error);
+    showToast(getFriendlyErrorMessage(error));
+  }
+}
+
+async function deleteLibraryItem(item) {
+  const approved = await askForConfirmation(
+    "حذف الفيديو",
+    "سيتم حذف الفيديو من المكتبة والستورج مباشرة. هل تريد المتابعة؟"
+  );
+  if (!approved) {
+    return;
+  }
+
+  try {
+    await deleteStorageFile(item.storagePath).catch((error) => {
+      if (error?.code !== "storage/object-not-found") {
+        throw error;
+      }
+    });
+    await remove(ref(db, `library/${item.id}`));
+    showToast("تم حذف الفيديو من المكتبة.");
+    await loadLibraryItems();
+  } catch (error) {
+    console.error(error);
+    showToast(getFriendlyErrorMessage(error));
+  }
+}
+
 async function handleYoutubeSubmit(event) {
   event.preventDefault();
   if (!state.isHost) {
     return;
   }
 
+  state.pendingUploadMode = "";
   const value = dom.youtubeUrlInput.value.trim();
   const youtubeId = extractYoutubeId(value);
   if (!youtubeId) {
@@ -1350,6 +1788,7 @@ function handleYoutubeResultsScroll() {
 
 async function selectYoutubeResult(result) {
   dom.youtubeUrlInput.value = result.title;
+  state.pendingUploadMode = "";
   clearYoutubeSearchResults();
   try {
     await prepareYoutubeMovie(buildYoutubeWatchUrl(result.videoId), result.videoId);
@@ -1376,6 +1815,9 @@ async function prepareHostMovie(file, options = {}) {
     });
     await publishQueuedMovieState(queuedFilm);
     setUploadProgress(100, file.name, "تم تجهيز الفيلم التالي");
+    switchScreen("room");
+    updateModeUi();
+    revealHostControls();
     showToast("تم تجهيز الفيلم التالي وسيبدأ بعد انتهاء الحالي.");
     return;
   }
@@ -1574,8 +2016,8 @@ async function getStorageFilmUrl(film) {
 
 async function publishStorageMovieState(film) {
   const now = Date.now();
-  const previousPath = state.roomData?.film?.storagePath;
-  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
+  const previousPath = getDeletableStoragePath(state.roomData?.film);
+  const previousQueuedPath = getDeletableStoragePath(state.roomData?.nextFilm);
   const payload = {
     status: "live",
     lastActivity: now,
@@ -1605,7 +2047,7 @@ async function publishStorageMovieState(film) {
 }
 
 async function publishQueuedMovieState(film) {
-  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
+  const previousQueuedPath = getDeletableStoragePath(state.roomData?.nextFilm);
   await update(ref(db, `rooms/${state.roomId}`), {
     nextFilm: film,
   });
@@ -1629,7 +2071,7 @@ async function playQueuedFilmIfReady() {
     return;
   }
 
-  const previousPath = state.roomData?.film?.storagePath;
+  const previousPath = getDeletableStoragePath(state.roomData?.film);
   await loadHostStorageMovie(nextFilm);
   await prepareHostMovieAudio();
   const started = await dom.hostVideo.play().then(
@@ -1678,6 +2120,20 @@ async function deleteStorageFile(path) {
   await deleteObject(storageRef(storage, path));
 }
 
+function isLibraryStorageFilm(film) {
+  return Boolean(
+    film?.source === "storage" &&
+      (film.storageOwner === "library" || film.libraryItemId || String(film.storagePath || "").startsWith("library/"))
+  );
+}
+
+function getDeletableStoragePath(film) {
+  if (!film?.storagePath || isLibraryStorageFilm(film)) {
+    return "";
+  }
+  return film.storagePath;
+}
+
 function setUploadProgress(percent, fileName, speedLabel) {
   state.uploadProgress = percent;
   dom.uploadStatusCard.classList.remove("hidden");
@@ -1688,6 +2144,22 @@ function setUploadProgress(percent, fileName, speedLabel) {
   if (dom.uploadHint) {
     dom.uploadHint.textContent = "";
   }
+}
+
+function resetLibraryUploadProgress() {
+  dom.libraryUploadStatusCard.classList.add("hidden");
+  dom.libraryUploadFileName.textContent = "جارٍ التحضير...";
+  dom.libraryUploadProgressLabel.textContent = "0%";
+  dom.libraryUploadSpeedLabel.textContent = "";
+  dom.libraryUploadProgressBar.style.width = "0%";
+}
+
+function setLibraryUploadProgress(percent, fileName, speedLabel) {
+  dom.libraryUploadStatusCard.classList.remove("hidden");
+  dom.libraryUploadFileName.textContent = fileName;
+  dom.libraryUploadProgressLabel.textContent = `${Math.round(percent)}%`;
+  dom.libraryUploadSpeedLabel.textContent = speedLabel;
+  dom.libraryUploadProgressBar.style.width = `${percent}%`;
 }
 
 async function restorePersistedHostMovie(roomId) {
@@ -2369,8 +2841,8 @@ function stopYoutubeTickLoop() {
 
 async function publishHostMovieState() {
   const now = Date.now();
-  const previousPath = state.roomData?.film?.storagePath;
-  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
+  const previousPath = getDeletableStoragePath(state.roomData?.film);
+  const previousQueuedPath = getDeletableStoragePath(state.roomData?.nextFilm);
   const payload = {
     status: "live",
     lastActivity: now,
@@ -2405,8 +2877,8 @@ async function publishHostMovieState() {
 
 async function publishYoutubeMovieState() {
   const now = Date.now();
-  const previousPath = state.roomData?.film?.storagePath;
-  const previousQueuedPath = state.roomData?.nextFilm?.storagePath;
+  const previousPath = getDeletableStoragePath(state.roomData?.film);
+  const previousQueuedPath = getDeletableStoragePath(state.roomData?.nextFilm);
   const payload = {
     status: "live",
     lastActivity: now,
@@ -4056,7 +4528,7 @@ function showToast(message) {
 function getFriendlyErrorMessage(error) {
   const raw = String(error?.message || error || "");
   if (/permission denied/i.test(raw)) {
-    return "فايربيس رفض العملية. فعّل قواعد Realtime Database المرفقة أولاً ثم أعد المحاولة.";
+    return "فايربيس رفض العملية. فعّل قواعد Realtime Database و Storage المرفقة ثم أعد المحاولة.";
   }
   return raw || "حدث خطأ غير متوقع.";
 }
@@ -4125,6 +4597,10 @@ async function generateUniqueRoomId() {
 
 function sanitizeName(value) {
   return (value || "").trim().replace(/\s+/g, " ").slice(0, 28);
+}
+
+function sanitizeLibraryName(value) {
+  return (value || "").trim().replace(/\s+/g, " ").slice(0, 80);
 }
 
 function normalizeRoomCodeInput(value) {
@@ -4197,6 +4673,13 @@ function syncRenameSaveVisibility() {
 
 function createClientId() {
   return crypto.randomUUID ? crypto.randomUUID() : `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createLibraryItemId() {
+  const randomPart = crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `lib-${randomPart}`.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 80);
 }
 
 function createAvatar(seed, name) {

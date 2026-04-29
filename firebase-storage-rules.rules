@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /rooms/{roomId}/{fileName=**} {
+      allow read: if roomId.matches('^[0-9]{4}$');
+
+      allow create, update: if roomId.matches('^[0-9]{4}$')
+        && request.resource.size < 10737418240
+        && request.resource.contentType.matches('video/.*');
+
+      allow delete: if roomId.matches('^[0-9]{4}$');
+    }
+
+    match /library/{itemId}/{fileName=**} {
+      allow read: if itemId.matches('^[A-Za-z0-9_-]{8,80}$');
+
+      allow create, update: if itemId.matches('^[A-Za-z0-9_-]{8,80}$')
+        && request.resource.size < 10737418240
+        && request.resource.contentType.matches('video/.*');
+
+      allow delete: if itemId.matches('^[A-Za-z0-9_-]{8,80}$');
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
