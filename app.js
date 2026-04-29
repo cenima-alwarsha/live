@@ -243,6 +243,9 @@ const state = {
   localBuffering: false,
   lastBufferingSyncAt: 0,
   viewerStorageSyncing: false,
+  viewerStorageInitialSynced: false,
+  viewerInitialLoadActive: false,
+  viewerBufferingTimer: null,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -2615,6 +2618,9 @@ async function loadViewerStorageMovie(film) {
   }
 
   setLocalBuffering(true);
+  state.viewerInitialLoadActive = true;
+  state.viewerStorageInitialSynced = false;
+  clearViewerBufferingTimer();
   cleanupViewerReconnect();
   closeAllPeers();
   stopViewerCanvasLoop();
@@ -2664,10 +2670,12 @@ async function applyStorageSyncNow(sync = null, force = false) {
   const duration = Number.isFinite(video.duration) ? video.duration : sync.duration || 0;
   const targetTime = getProjectedSyncTime(sync, duration);
   const currentTime = video.currentTime || 0;
-  const seekTolerance = state.isHost ? 1.25 : 2.8;
+  const isViewerStorage = !state.isHost && isStorageMode();
+  const isInitialViewerSync = isViewerStorage && !state.viewerStorageInitialSynced;
+  const seekTolerance = state.isHost ? 1.25 : isInitialViewerSync || force ? 1.25 : 8;
   const shouldSeek = force || Math.abs(currentTime - targetTime) > seekTolerance;
 
-  if (!state.isHost && shouldSeek) {
+  if (isViewerStorage && shouldSeek) {
     setLocalBuffering(true);
     video.pause();
     video.currentTime = targetTime;
@@ -2706,6 +2714,10 @@ async function applyStorageSyncNow(sync = null, force = false) {
     if (!state.isHost && video.readyState >= 2 && !video.seeking) {
       setLocalBuffering(false);
     }
+  }
+
+  if (isViewerStorage && !sync.isBuffering) {
+    state.viewerStorageInitialSynced = true;
   }
 
   if (!state.isHost) {
@@ -3469,8 +3481,31 @@ function renderViewerTime(sync = null) {
 }
 
 function setLocalBuffering(isBuffering) {
+  if (!isBuffering) {
+    clearViewerBufferingTimer();
+  }
   state.localBuffering = Boolean(isBuffering);
   updateBufferingOverlay();
+}
+
+function clearViewerBufferingTimer() {
+  if (!state.viewerBufferingTimer) {
+    return;
+  }
+
+  clearTimeout(state.viewerBufferingTimer);
+  state.viewerBufferingTimer = null;
+}
+
+function scheduleViewerBuffering(delay = 1300) {
+  clearViewerBufferingTimer();
+  state.viewerBufferingTimer = window.setTimeout(() => {
+    state.viewerBufferingTimer = null;
+    if (!state.isHost && isStorageMode() && state.screen === "room") {
+      state.localBuffering = true;
+      updateBufferingOverlay();
+    }
+  }, delay);
 }
 
 function updateBufferingOverlay() {
@@ -3514,18 +3549,25 @@ function handleViewerBufferingEvent(isBuffering) {
 
   if (isBuffering) {
     const sync = state.roomData?.sync || {};
-    const isInitialFrameLoading = dom.remoteVideo.readyState < 2;
-    const isExpectedPlaybackLoading = Boolean(sync.isBuffering || sync.isPlaying || dom.remoteVideo.seeking);
-    if (!isInitialFrameLoading && !isExpectedPlaybackLoading) {
-      setLocalBuffering(false);
+    const isInitialFrameLoading = state.viewerInitialLoadActive || dom.remoteVideo.readyState < 2;
+    const isExpectedSeekLoading = Boolean(sync.isBuffering || dom.remoteVideo.seeking);
+
+    if (isInitialFrameLoading) {
+      setLocalBuffering(true);
       return;
     }
 
-    setLocalBuffering(true);
+    if (isExpectedSeekLoading) {
+      scheduleViewerBuffering(450);
+      return;
+    }
+
+    scheduleViewerBuffering(1500);
     return;
   }
 
   if (dom.remoteVideo.readyState >= 3 && !dom.remoteVideo.seeking) {
+    state.viewerInitialLoadActive = false;
     setLocalBuffering(false);
   }
 }
