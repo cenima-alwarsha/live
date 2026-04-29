@@ -258,6 +258,7 @@ const state = {
   viewerJoinGateUntil: 0,
   viewerJoinGateTargetTime: 0,
   viewerJoinGateTimer: null,
+  viewerCatchupTimer: null,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -2653,6 +2654,7 @@ async function loadViewerStorageMovie(film) {
   dom.remoteVideo.pause();
   dom.remoteVideo.srcObject = null;
   dom.remoteVideo.muted = false;
+  resetViewerPlaybackRate();
   dom.remoteVideo.dataset.storagePath = film.storagePath || "";
   dom.remoteVideo.src = url;
   dom.remoteVideo.load();
@@ -2728,16 +2730,21 @@ async function applyStorageSyncNow(sync = null, force = false) {
   }
 
   if (sync.isPlaying) {
-    const started = await video.play().then(
-      () => true,
-      () => false
-    );
-    dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || started);
+    const started = isViewerStorage
+      ? await playViewerStorageWithFallback(video, false)
+      : await video.play().then(
+          () => true,
+          () => false
+        );
+    dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || isViewerStorage || started);
     if (!state.isHost && started && video.readyState >= 3 && !video.seeking) {
       setLocalBuffering(false);
     }
   } else {
     video.pause();
+    if (isViewerStorage) {
+      resetViewerPlaybackRate();
+    }
     dom.playUnlockOverlay.classList.add("hidden");
     if (!state.isHost && video.readyState >= 2 && !video.seeking) {
       setLocalBuffering(false);
@@ -3587,6 +3594,29 @@ function clearViewerJoinGate() {
   updateBufferingOverlay();
 }
 
+function resetViewerPlaybackRate() {
+  if (state.viewerCatchupTimer) {
+    clearTimeout(state.viewerCatchupTimer);
+    state.viewerCatchupTimer = null;
+  }
+
+  if (dom.remoteVideo) {
+    dom.remoteVideo.playbackRate = 1;
+  }
+}
+
+function nudgeViewerCatchup(secondsBehind) {
+  resetViewerPlaybackRate();
+  if (!secondsBehind || secondsBehind <= 0 || !isStorageMode()) {
+    return;
+  }
+
+  const rate = secondsBehind > 1.4 ? 1.08 : 1.045;
+  const duration = Math.min(Math.max(secondsBehind * 4200, 2200), 9000);
+  dom.remoteVideo.playbackRate = rate;
+  state.viewerCatchupTimer = window.setTimeout(resetViewerPlaybackRate, duration);
+}
+
 function updateViewerJoinGateCountdown() {
   if (!state.viewerJoinGateActive) {
     return;
@@ -3714,6 +3744,44 @@ async function startViewerJoinGatePreroll() {
   });
 }
 
+async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMuted = false) {
+  dom.playUnlockOverlay.classList.add("hidden");
+
+  if (!video.paused) {
+    if (video.muted !== restoreMuted) {
+      window.setTimeout(() => {
+        video.muted = restoreMuted;
+      }, 120);
+    }
+    return true;
+  }
+
+  let started = await video.play().then(
+    () => true,
+    () => false
+  );
+
+  if (!started) {
+    video.muted = true;
+    started = await video.play().then(
+      () => true,
+      () => false
+    );
+  }
+
+  if (started) {
+    window.setTimeout(() => {
+      video.muted = restoreMuted;
+      if (video.paused) {
+        video.muted = true;
+        video.play().catch(() => {});
+      }
+    }, 180);
+  }
+
+  return started;
+}
+
 async function finishViewerJoinGate() {
   if (!state.viewerJoinGateActive || !state.viewerJoinGateReady) {
     return;
@@ -3736,21 +3804,18 @@ async function finishViewerJoinGate() {
   setBufferingOverlayMode("normal");
 
   if (sync.isPlaying && !sync.isBuffering) {
-    if (Math.abs((video.currentTime || 0) - expectedTime) > 0.75) {
+    const drift = expectedTime - (video.currentTime || 0);
+    if (Math.abs(drift) > 2.4) {
       video.currentTime = expectedTime;
       await Promise.race([waitForSeekCompletion(video, 1300), wait(1300)]).catch(() => {});
+    } else if (drift > 0.35) {
+      nudgeViewerCatchup(drift);
     }
 
-    video.muted = state.viewerJoinGateMutedBeforePreroll;
-    const started = video.paused
-      ? await video.play().then(
-          () => true,
-          () => false
-        )
-      : true;
-    dom.playUnlockOverlay.classList.toggle("hidden", started);
+    await playViewerStorageWithFallback(video, state.viewerJoinGateMutedBeforePreroll);
   } else {
     video.pause();
+    resetViewerPlaybackRate();
     video.muted = state.viewerJoinGateMutedBeforePreroll;
     dom.playUnlockOverlay.classList.add("hidden");
   }
