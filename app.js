@@ -272,6 +272,7 @@ const state = {
   libraryItems: [],
   libraryReturnScreen: "home",
   librarySelectMode: false,
+  librarySelectingItemId: "",
   libraryRenameItemId: "",
   libraryTapCount: 0,
   lastLibraryTapAt: 0,
@@ -1335,6 +1336,8 @@ function renderLibraryItems() {
   state.libraryItems.forEach((item) => {
     const card = document.createElement("article");
     card.className = "library-card";
+    const isSelecting = state.librarySelectingItemId === item.id;
+    const libraryBusy = Boolean(state.librarySelectingItemId);
 
     const info = document.createElement("div");
     info.className = "library-card-info";
@@ -1356,7 +1359,8 @@ function renderLibraryItems() {
       const selectButton = document.createElement("button");
       selectButton.className = "primary-button library-card-button";
       selectButton.type = "button";
-      selectButton.textContent = "اختيار";
+      selectButton.textContent = isSelecting ? "جاري التجهيز..." : "اختيار";
+      selectButton.disabled = libraryBusy;
       selectButton.addEventListener("click", () => selectLibraryMovie(item));
       actions.append(selectButton);
     }
@@ -1365,12 +1369,14 @@ function renderLibraryItems() {
     renameButton.className = "secondary-button library-card-button";
     renameButton.type = "button";
     renameButton.textContent = "تعديل الاسم";
+    renameButton.disabled = libraryBusy;
     renameButton.addEventListener("click", () => openLibraryRenameModal(item));
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "danger-button library-card-button";
     deleteButton.type = "button";
     deleteButton.textContent = "حذف";
+    deleteButton.disabled = libraryBusy;
     deleteButton.addEventListener("click", () => deleteLibraryItem(item));
 
     actions.append(renameButton, deleteButton);
@@ -1384,24 +1390,40 @@ async function selectLibraryMovie(item) {
     return;
   }
 
+  if (state.librarySelectingItemId) {
+    showToast("جاري تجهيز الفيديو...");
+    return;
+  }
+
   const mode = state.pendingUploadMode === "queue" || shouldQueueNextUpload() ? "queue" : "replace";
   state.pendingUploadMode = "";
+  state.librarySelectingItemId = item.id;
+  setLibraryUploadProgress(8, item.name || "فيديو من المكتبة", "جاري تجهيز الفيديو من المكتبة");
+  renderLibraryItems();
+  showToast("جاري تجهيز الفيديو من المكتبة...");
 
   try {
     await prepareLibraryMovie(item, { mode });
   } catch (error) {
     console.error(error);
     showToast(getFriendlyErrorMessage(error));
+  } finally {
+    state.librarySelectingItemId = "";
+    if (state.screen === "library") {
+      renderLibraryItems();
+    }
   }
 }
 
 async function prepareLibraryMovie(item, options = {}) {
   const film = buildFilmFromLibraryItem(item);
   const mode = options.mode === "queue" ? "queue" : "replace";
-  state.librarySelectMode = false;
 
   if (mode === "queue") {
+    setLibraryUploadProgress(45, item.name || "فيديو من المكتبة", "إضافة الفيلم التالي");
     await publishQueuedMovieState(film);
+    setLibraryUploadProgress(100, item.name || "فيديو من المكتبة", "جاهز");
+    state.librarySelectMode = false;
     switchScreen("room");
     updateModeUi();
     revealHostControls();
@@ -1413,9 +1435,13 @@ async function prepareLibraryMovie(item, options = {}) {
   resetHostMovieState();
   closeAllPeers();
 
+  setLibraryUploadProgress(35, item.name || "فيديو من المكتبة", "تحميل أول لقطة");
   await loadHostStorageMovie(film);
+  setLibraryUploadProgress(78, item.name || "فيديو من المكتبة", "نشر الفيلم في الغرفة");
   await publishStorageMovieState(film);
+  setLibraryUploadProgress(100, item.name || "فيديو من المكتبة", "جاهز");
 
+  state.librarySelectMode = false;
   switchScreen("room");
   updateModeUi();
   updateHostPlaybackUi();

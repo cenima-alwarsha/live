@@ -76,6 +76,13 @@ button {
   color: inherit;
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
 .hidden {
   display: none !important;
 }
@@ -628,6 +635,10 @@ html.resume-room #connectingScreen {
   padding: 9px 12px;
   border-radius: 13px;
   white-space: nowrap;
+}
+
+.library-card-button:disabled {
+  pointer-events: none;
 }
 
 .library-message {
