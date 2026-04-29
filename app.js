@@ -242,6 +242,7 @@ const state = {
   hostSyncSuppressed: false,
   localBuffering: false,
   lastBufferingSyncAt: 0,
+  viewerStorageSyncing: false,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -2633,6 +2634,24 @@ async function applyStorageSync(sync = null, force = false, allowHost = false) {
     return;
   }
 
+  if (!state.isHost && state.viewerStorageSyncing) {
+    return;
+  }
+
+  if (!state.isHost) {
+    state.viewerStorageSyncing = true;
+  }
+
+  try {
+    await applyStorageSyncNow(sync, force);
+  } finally {
+    if (!state.isHost) {
+      state.viewerStorageSyncing = false;
+    }
+  }
+}
+
+async function applyStorageSyncNow(sync = null, force = false) {
   const video = state.isHost ? dom.hostVideo : dom.remoteVideo;
   if (!video.src && !video.srcObject) {
     return;
@@ -2645,9 +2664,16 @@ async function applyStorageSync(sync = null, force = false, allowHost = false) {
   const duration = Number.isFinite(video.duration) ? video.duration : sync.duration || 0;
   const targetTime = getProjectedSyncTime(sync, duration);
   const currentTime = video.currentTime || 0;
-  const shouldSeek = force || Math.abs(currentTime - targetTime) > 1.25;
+  const seekTolerance = state.isHost ? 1.25 : 2.8;
+  const shouldSeek = force || Math.abs(currentTime - targetTime) > seekTolerance;
 
-  if (shouldSeek) {
+  if (!state.isHost && shouldSeek) {
+    setLocalBuffering(true);
+    video.pause();
+    video.currentTime = targetTime;
+    await Promise.race([waitForSeekCompletion(video), wait(3500)]).catch(() => {});
+    await Promise.race([waitForPlayable(video), wait(4500)]).catch(() => {});
+  } else if (shouldSeek) {
     if (!state.isHost) {
       setLocalBuffering(true);
     }
@@ -2671,7 +2697,7 @@ async function applyStorageSync(sync = null, force = false, allowHost = false) {
       () => false
     );
     dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || started);
-    if (!state.isHost && started && video.readyState >= 2 && !video.seeking) {
+    if (!state.isHost && started && video.readyState >= 3 && !video.seeking) {
       setLocalBuffering(false);
     }
   } else {
@@ -3296,7 +3322,10 @@ async function syncHostPlayback(force = false) {
   };
 
   const signature = JSON.stringify(payload);
-  if (!force && signature === state.lastSyncSignature && now - state.lastSyncSentAt < 850) {
+  if (!force && now - state.lastSyncSentAt < 1200) {
+    return;
+  }
+  if (!force && signature === state.lastSyncSignature) {
     return;
   }
 
@@ -3360,7 +3389,10 @@ async function syncYoutubeHostPlayback(force = false) {
   };
 
   const signature = JSON.stringify({ source: "youtube", ...payload });
-  if (!force && signature === state.lastSyncSignature && now - state.lastSyncSentAt < 850) {
+  if (!force && now - state.lastSyncSentAt < 1200) {
+    return;
+  }
+  if (!force && signature === state.lastSyncSignature) {
     return;
   }
 
@@ -3493,7 +3525,7 @@ function handleViewerBufferingEvent(isBuffering) {
     return;
   }
 
-  if (dom.remoteVideo.readyState >= 2 && !dom.remoteVideo.seeking) {
+  if (dom.remoteVideo.readyState >= 3 && !dom.remoteVideo.seeking) {
     setLocalBuffering(false);
   }
 }
