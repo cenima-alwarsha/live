@@ -44,7 +44,7 @@ const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
 const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const SECRET_LIBRARY_TAPS = 5;
 const SECRET_LIBRARY_TAP_WINDOW_MS = 1200;
-const VIEWER_JOIN_GATE_MS = 5000;
+const VIEWER_JOIN_GATE_MS = 10000;
 const MAX_VIDEO_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024;
 const HOST_VIDEO_MAX_FRAMERATE = 30;
 const HOST_VIDEO_HIGH_BITRATE = 8_000_000;
@@ -3534,7 +3534,7 @@ function setBufferingOverlayMode(mode, seconds = 0) {
   }
   dom.bufferingWaitNote?.classList.add("hidden");
   if (dom.bufferingCountdown) {
-    dom.bufferingCountdown.textContent = "5";
+    dom.bufferingCountdown.textContent = "10";
   }
 }
 
