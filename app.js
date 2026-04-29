@@ -449,11 +449,17 @@ function attachEvents() {
     requestHostWakeLock();
   });
   dom.hostVideo.addEventListener("pause", () => {
+    if (!state.hostSyncSuppressed) {
+      setLocalBuffering(false);
+    }
     updateHostPlaybackUi();
     syncHostPlayback(true);
     releaseHostWakeLock();
   });
   dom.hostVideo.addEventListener("ended", () => {
+    if (!state.hostSyncSuppressed) {
+      setLocalBuffering(false);
+    }
     updateHostPlaybackUi();
     syncHostPlayback(true);
     releaseHostWakeLock();
@@ -3446,10 +3452,14 @@ function handleHostBufferingEvent(isBuffering) {
     return;
   }
 
-  setLocalBuffering(isBuffering);
-
   const now = Date.now();
   if (isBuffering) {
+    if ((dom.hostVideo.paused && !dom.hostVideo.seeking) || dom.hostVideo.ended) {
+      setLocalBuffering(false);
+      return;
+    }
+
+    setLocalBuffering(true);
     if (now - state.lastBufferingSyncAt < 900) {
       return;
     }
@@ -3461,6 +3471,7 @@ function handleHostBufferingEvent(isBuffering) {
     return;
   }
 
+  setLocalBuffering(false);
   syncHostPlayback(true);
 }
 
@@ -3470,6 +3481,14 @@ function handleViewerBufferingEvent(isBuffering) {
   }
 
   if (isBuffering) {
+    const sync = state.roomData?.sync || {};
+    const isInitialFrameLoading = dom.remoteVideo.readyState < 2;
+    const isExpectedPlaybackLoading = Boolean(sync.isBuffering || sync.isPlaying || dom.remoteVideo.seeking);
+    if (!isInitialFrameLoading && !isExpectedPlaybackLoading) {
+      setLocalBuffering(false);
+      return;
+    }
+
     setLocalBuffering(true);
     return;
   }
