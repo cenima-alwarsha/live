@@ -44,6 +44,7 @@ const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
 const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const SECRET_LIBRARY_TAPS = 5;
 const SECRET_LIBRARY_TAP_WINDOW_MS = 1200;
+const VIEWER_JOIN_GATE_MS = 5000;
 const MAX_VIDEO_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024;
 const HOST_VIDEO_MAX_FRAMERATE = 30;
 const HOST_VIDEO_HIGH_BITRATE = 8_000_000;
@@ -162,6 +163,9 @@ const dom = {
   playUnlockOverlay: document.getElementById("playUnlockOverlay"),
   unlockPlaybackButton: document.getElementById("unlockPlaybackButton"),
   bufferingOverlay: document.getElementById("bufferingOverlay"),
+  bufferingLabel: document.getElementById("bufferingLabel") || document.querySelector(".buffering-label"),
+  bufferingWaitNote: document.getElementById("bufferingWaitNote"),
+  bufferingCountdown: document.getElementById("bufferingCountdown"),
   hostControlsOverlay: document.getElementById("hostControlsOverlay"),
   hostMovieName: document.getElementById("hostMovieName"),
   hostTimeLabel: document.getElementById("hostTimeLabel"),
@@ -246,6 +250,11 @@ const state = {
   viewerStorageInitialSynced: false,
   viewerInitialLoadActive: false,
   viewerBufferingTimer: null,
+  viewerJoinGateActive: false,
+  viewerJoinGateReady: false,
+  viewerJoinGateUntil: 0,
+  viewerJoinGateTargetTime: 0,
+  viewerJoinGateTimer: null,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -774,7 +783,9 @@ function subscribeToRoom(roomId) {
     updateModeUi();
     updateBufferingOverlay();
     updateWaitingOverlay();
-    renderViewerTime(state.roomData.sync);
+    if (!isViewerJoinGateActive()) {
+      renderViewerTime(state.roomData.sync);
+    }
     handleRoomMediaUpdate().catch((error) => console.error("media update error", error));
 
     if (!state.isHost && state.roomData?.creatorId) {
@@ -968,6 +979,7 @@ function switchScreen(name) {
     closeJoinRoomModal();
     closeLibraryRenameModal();
     dom.theaterChatOverlay.innerHTML = "";
+    clearViewerJoinGate();
     setLocalBuffering(false);
   }
 }
@@ -2601,8 +2613,12 @@ async function handleStorageMediaUpdate(film) {
       await applyStorageSync(state.roomData?.sync, true, true);
     }
   } else {
-    await loadViewerStorageMovie(film);
-    await applyStorageSync(state.roomData?.sync);
+    const loadedNewMovie = await loadViewerStorageMovie(film);
+    if (shouldStartViewerJoinGate(loadedNewMovie, state.roomData?.sync)) {
+      await startViewerJoinGate(state.roomData?.sync);
+    } else if (!isViewerJoinGateActive()) {
+      await applyStorageSync(state.roomData?.sync);
+    }
     scheduleViewerReconnect(350);
   }
 
@@ -2612,11 +2628,16 @@ async function handleStorageMediaUpdate(film) {
 }
 
 async function loadViewerStorageMovie(film) {
-  const url = await getStorageFilmUrl(film);
-  if (dom.remoteVideo.dataset.storagePath === film.storagePath && dom.remoteVideo.src === url) {
-    return;
+  if (dom.remoteVideo.dataset.storagePath === film.storagePath && dom.remoteVideo.src) {
+    return false;
   }
 
+  const url = await getStorageFilmUrl(film);
+  if (dom.remoteVideo.dataset.storagePath === film.storagePath && dom.remoteVideo.src === url) {
+    return false;
+  }
+
+  clearViewerJoinGate();
   setLocalBuffering(true);
   state.viewerInitialLoadActive = true;
   state.viewerStorageInitialSynced = false;
@@ -2633,10 +2654,15 @@ async function loadViewerStorageMovie(film) {
   dom.remoteVideo.dataset.storagePath = film.storagePath || "";
   dom.remoteVideo.src = url;
   dom.remoteVideo.load();
+  return true;
 }
 
 async function applyStorageSync(sync = null, force = false, allowHost = false) {
   if (!sync || (state.isHost && !allowHost)) {
+    return;
+  }
+
+  if (!state.isHost && isViewerJoinGateActive()) {
     return;
   }
 
@@ -3485,7 +3511,31 @@ function setLocalBuffering(isBuffering) {
     clearViewerBufferingTimer();
   }
   state.localBuffering = Boolean(isBuffering);
+  if (!state.viewerJoinGateActive) {
+    setBufferingOverlayMode("normal");
+  }
   updateBufferingOverlay();
+}
+
+function setBufferingOverlayMode(mode, seconds = 0) {
+  if (mode === "join") {
+    if (dom.bufferingLabel) {
+      dom.bufferingLabel.textContent = "جاري تجهيز مقعدك";
+    }
+    dom.bufferingWaitNote?.classList.remove("hidden");
+    if (dom.bufferingCountdown) {
+      dom.bufferingCountdown.textContent = String(Math.max(seconds, 0));
+    }
+    return;
+  }
+
+  if (dom.bufferingLabel) {
+    dom.bufferingLabel.textContent = "جاري التحميل";
+  }
+  dom.bufferingWaitNote?.classList.add("hidden");
+  if (dom.bufferingCountdown) {
+    dom.bufferingCountdown.textContent = "5";
+  }
 }
 
 function clearViewerBufferingTimer() {
@@ -3508,9 +3558,160 @@ function scheduleViewerBuffering(delay = 1300) {
   }, delay);
 }
 
+function getViewerJoinGateSeconds() {
+  return Math.max(Math.ceil((state.viewerJoinGateUntil - Date.now()) / 1000), 0);
+}
+
+function isViewerJoinGateActive() {
+  return Boolean(state.viewerJoinGateActive);
+}
+
+function clearViewerJoinGate() {
+  if (state.viewerJoinGateTimer) {
+    clearInterval(state.viewerJoinGateTimer);
+    state.viewerJoinGateTimer = null;
+  }
+  state.viewerJoinGateActive = false;
+  state.viewerJoinGateReady = false;
+  state.viewerJoinGateUntil = 0;
+  state.viewerJoinGateTargetTime = 0;
+  setBufferingOverlayMode("normal");
+  updateBufferingOverlay();
+}
+
+function updateViewerJoinGateCountdown() {
+  if (!state.viewerJoinGateActive) {
+    return;
+  }
+
+  const seconds = getViewerJoinGateSeconds();
+  setBufferingOverlayMode("join", seconds);
+  updateBufferingOverlay();
+
+  if (seconds <= 0) {
+    finishViewerJoinGate().catch((error) => console.error("viewer gate finish failed", error));
+  }
+}
+
+function shouldStartViewerJoinGate(loadedNewMovie, sync = null) {
+  return Boolean(
+    !state.isHost &&
+      loadedNewMovie &&
+      isStorageMode() &&
+      sync?.isPlaying &&
+      !sync?.isBuffering
+  );
+}
+
+async function startViewerJoinGate(sync = null) {
+  if (!shouldStartViewerJoinGate(true, sync) || state.viewerJoinGateActive) {
+    return false;
+  }
+
+  const video = dom.remoteVideo;
+  const videoDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+  const expectedDuration = videoDuration || sync.duration || getActiveFilm()?.duration || 0;
+  const targetTime = clampTime(getProjectedSyncTime(sync, expectedDuration) + VIEWER_JOIN_GATE_MS / 1000, expectedDuration);
+
+  state.viewerJoinGateActive = true;
+  state.viewerJoinGateReady = false;
+  state.viewerJoinGateUntil = Date.now() + VIEWER_JOIN_GATE_MS;
+  state.viewerJoinGateTargetTime = targetTime;
+  state.viewerStorageSyncing = true;
+  state.viewerInitialLoadActive = true;
+
+  dom.playUnlockOverlay.classList.add("hidden");
+  setLocalBuffering(true);
+  setBufferingOverlayMode("join", getViewerJoinGateSeconds());
+  renderViewerTime({
+    currentTime: targetTime,
+    duration: expectedDuration,
+  });
+
+  if (state.viewerJoinGateTimer) {
+    clearInterval(state.viewerJoinGateTimer);
+  }
+  state.viewerJoinGateTimer = window.setInterval(updateViewerJoinGateCountdown, 200);
+
+  try {
+    video.pause();
+    if (video.readyState === 0) {
+      await Promise.race([waitForVideoReady(video, "loadedmetadata"), wait(3500)]).catch(() => {});
+    }
+
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : expectedDuration;
+    state.viewerJoinGateTargetTime = clampTime(state.viewerJoinGateTargetTime, duration);
+
+    try {
+      if (Math.abs((video.currentTime || 0) - state.viewerJoinGateTargetTime) > 0.2) {
+        video.currentTime = state.viewerJoinGateTargetTime;
+      }
+    } catch (error) {
+      console.warn("viewer gate seek failed", error);
+    }
+
+    await Promise.race([waitForSeekCompletion(video, 4500), wait(4500)]).catch(() => {});
+    await Promise.race([waitForPlayable(video), wait(5000)]).catch(() => {});
+    state.viewerJoinGateReady = true;
+    state.viewerInitialLoadActive = false;
+
+    if (getViewerJoinGateSeconds() <= 0) {
+      await finishViewerJoinGate();
+    }
+  } finally {
+    state.viewerStorageSyncing = false;
+  }
+
+  return true;
+}
+
+async function finishViewerJoinGate() {
+  if (!state.viewerJoinGateActive || !state.viewerJoinGateReady) {
+    return;
+  }
+
+  if (state.viewerJoinGateTimer) {
+    clearInterval(state.viewerJoinGateTimer);
+    state.viewerJoinGateTimer = null;
+  }
+
+  const video = dom.remoteVideo;
+  const sync = state.roomData?.sync || {};
+  const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sync.duration || 0;
+  state.viewerJoinGateActive = false;
+  state.viewerJoinGateReady = false;
+  state.viewerStorageInitialSynced = true;
+  state.viewerInitialLoadActive = false;
+  setBufferingOverlayMode("normal");
+
+  if (sync.isPlaying && !sync.isBuffering) {
+    const started = await video.play().then(
+      () => true,
+      () => false
+    );
+    dom.playUnlockOverlay.classList.toggle("hidden", started);
+  } else {
+    video.pause();
+    dom.playUnlockOverlay.classList.add("hidden");
+  }
+
+  renderViewerTime({
+    currentTime: video.currentTime || state.viewerJoinGateTargetTime,
+    duration,
+  });
+  state.viewerJoinGateTargetTime = 0;
+  setLocalBuffering(false);
+}
+
 function updateBufferingOverlay() {
   const roomBuffering = Boolean(state.roomData?.sync?.isBuffering);
-  const shouldShow = state.screen === "room" && (state.localBuffering || (!state.isHost && roomBuffering));
+  const joinGate = isViewerJoinGateActive();
+  const shouldShow = state.screen === "room" && (joinGate || state.localBuffering || (!state.isHost && roomBuffering));
+  if (joinGate) {
+    setBufferingOverlayMode("join", getViewerJoinGateSeconds());
+  } else {
+    setBufferingOverlayMode("normal");
+  }
   dom.bufferingOverlay.classList.toggle("hidden", !shouldShow);
 }
 
@@ -3544,6 +3745,11 @@ function handleHostBufferingEvent(isBuffering) {
 
 function handleViewerBufferingEvent(isBuffering) {
   if (state.isHost || !isStorageMode()) {
+    return;
+  }
+
+  if (state.viewerJoinGateActive) {
+    updateViewerJoinGateCountdown();
     return;
   }
 

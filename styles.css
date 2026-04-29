@@ -1119,6 +1119,40 @@ html.resume-room #connectingScreen {
   font-size: 0.84rem;
 }
 
+.buffering-wait-note {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-end: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  max-width: min(78%, 360px);
+  padding: 8px 10px;
+  border-radius: 18px;
+  border: 1px solid rgba(244, 220, 160, 0.22);
+  background: rgba(4, 9, 16, 0.76);
+  color: var(--cream);
+  font-weight: 900;
+  font-size: clamp(0.72rem, 2.2vw, 0.92rem);
+  line-height: 1.4;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(16px);
+}
+
+.buffering-wait-note strong {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #f4dca0, #c69b45);
+  color: #050a11;
+  font-size: 0.9rem;
+  line-height: 1;
+  box-shadow: 0 8px 20px rgba(214, 181, 106, 0.24);
+}
+
 @keyframes buffering-spin {
   to {
     transform: rotate(1turn);
