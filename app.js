@@ -45,7 +45,6 @@ const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const SECRET_LIBRARY_TAPS = 5;
 const SECRET_LIBRARY_TAP_WINDOW_MS = 1200;
 const VIEWER_JOIN_GATE_MS = 10000;
-const VIEWER_JOIN_PREROLL_MS = 3000;
 const MAX_VIDEO_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024;
 const HOST_VIDEO_MAX_FRAMERATE = 30;
 const HOST_VIDEO_HIGH_BITRATE = 8_000_000;
@@ -3626,10 +3625,6 @@ function updateViewerJoinGateCountdown() {
   setBufferingOverlayMode("join", seconds);
   updateBufferingOverlay();
 
-  if (state.viewerJoinGateReady && getViewerJoinGateRemainingMs() <= VIEWER_JOIN_PREROLL_MS) {
-    startViewerJoinGatePreroll().catch((error) => console.error("viewer gate preroll failed", error));
-  }
-
   if (seconds <= 0) {
     finishViewerJoinGate().catch((error) => console.error("viewer gate finish failed", error));
   }
@@ -3653,7 +3648,8 @@ async function startViewerJoinGate(sync = null) {
   const video = dom.remoteVideo;
   const videoDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
   const expectedDuration = videoDuration || sync.duration || getActiveFilm()?.duration || 0;
-  const targetTime = clampTime(getProjectedSyncTime(sync, expectedDuration) + VIEWER_JOIN_GATE_MS / 1000, expectedDuration);
+  const startTime = getProjectedSyncTime(sync, expectedDuration);
+  const targetTime = clampTime(startTime + VIEWER_JOIN_GATE_MS / 1000, expectedDuration);
 
   state.viewerJoinGateActive = true;
   state.viewerJoinGateReady = false;
@@ -3668,7 +3664,7 @@ async function startViewerJoinGate(sync = null) {
   setLocalBuffering(true);
   setBufferingOverlayMode("join", getViewerJoinGateSeconds());
   renderViewerTime({
-    currentTime: targetTime,
+    currentTime: startTime,
     duration: expectedDuration,
   });
 
@@ -3685,11 +3681,11 @@ async function startViewerJoinGate(sync = null) {
 
     const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : expectedDuration;
     state.viewerJoinGateTargetTime = clampTime(state.viewerJoinGateTargetTime, duration);
-    const prerollStartTime = clampTime(state.viewerJoinGateTargetTime - VIEWER_JOIN_PREROLL_MS / 1000, duration);
+    const liveStartTime = clampTime(startTime, duration);
 
     try {
-      if (Math.abs((video.currentTime || 0) - prerollStartTime) > 0.2) {
-        video.currentTime = prerollStartTime;
+      if (Math.abs((video.currentTime || 0) - liveStartTime) > 0.2) {
+        video.currentTime = liveStartTime;
       }
     } catch (error) {
       console.warn("viewer gate seek failed", error);
@@ -3699,10 +3695,12 @@ async function startViewerJoinGate(sync = null) {
     await Promise.race([waitForPlayable(video), wait(5000)]).catch(() => {});
     state.viewerJoinGateReady = true;
     state.viewerInitialLoadActive = false;
-
-    if (getViewerJoinGateRemainingMs() <= VIEWER_JOIN_PREROLL_MS) {
-      await startViewerJoinGatePreroll();
-    }
+    video.muted = false;
+    state.viewerJoinGateMutedBeforePreroll = false;
+    state.viewerJoinGatePrerollStarted = await video.play().then(
+      () => true,
+      () => false
+    );
 
     if (getViewerJoinGateSeconds() <= 0) {
       await finishViewerJoinGate();
@@ -3714,37 +3712,7 @@ async function startViewerJoinGate(sync = null) {
   return true;
 }
 
-async function startViewerJoinGatePreroll() {
-  if (!state.viewerJoinGateActive || !state.viewerJoinGateReady || state.viewerJoinGatePrerollStarted) {
-    return;
-  }
-
-  const video = dom.remoteVideo;
-  const sync = state.roomData?.sync || {};
-  if (!sync.isPlaying || sync.isBuffering) {
-    return;
-  }
-
-  state.viewerJoinGatePrerollStarted = true;
-  state.viewerJoinGateMutedBeforePreroll = video.muted;
-
-  const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sync.duration || 0;
-  const remainingSeconds = getViewerJoinGateRemainingMs() / 1000;
-  const prerollTime = clampTime(state.viewerJoinGateTargetTime - remainingSeconds, duration);
-
-  if (Math.abs((video.currentTime || 0) - prerollTime) > 0.35) {
-    video.currentTime = prerollTime;
-    await Promise.race([waitForSeekCompletion(video, 1600), wait(1600)]).catch(() => {});
-  }
-
-  video.muted = true;
-  await video.play().catch(() => {
-    video.muted = state.viewerJoinGateMutedBeforePreroll;
-    state.viewerJoinGatePrerollStarted = false;
-  });
-}
-
-async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMuted = false) {
+async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMuted = false, allowMutedFallback = true) {
   dom.playUnlockOverlay.classList.add("hidden");
 
   if (!video.paused) {
@@ -3761,7 +3729,7 @@ async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMut
     () => false
   );
 
-  if (!started) {
+  if (!started && allowMutedFallback) {
     video.muted = true;
     started = await video.play().then(
       () => true,
@@ -3772,7 +3740,7 @@ async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMut
   if (started) {
     window.setTimeout(() => {
       video.muted = restoreMuted;
-      if (video.paused) {
+      if (allowMutedFallback && video.paused) {
         video.muted = true;
         video.play().catch(() => {});
       }
@@ -3812,11 +3780,12 @@ async function finishViewerJoinGate() {
       nudgeViewerCatchup(drift);
     }
 
-    await playViewerStorageWithFallback(video, state.viewerJoinGateMutedBeforePreroll);
+    video.muted = false;
+    await playViewerStorageWithFallback(video, false, false);
   } else {
     video.pause();
     resetViewerPlaybackRate();
-    video.muted = state.viewerJoinGateMutedBeforePreroll;
+    video.muted = false;
     dom.playUnlockOverlay.classList.add("hidden");
   }
 
