@@ -3917,11 +3917,7 @@ async function prepareActiveViewerJoinGateBuffer(video, targetTime, duration, ga
   }
 }
 
-async function prepareAudibleActiveViewerJoinGatePlayback(video, duration, gateToken, gesturePlayPromise = null) {
-  let started = gesturePlayPromise
-    ? await Promise.race([gesturePlayPromise, wait(900).then(() => null)])
-    : null;
-
+async function preparePausedActiveViewerJoinGatePlayback(video, duration, gateToken, gesturePrimePromise = null) {
   const sync = state.roomData?.sync || {};
   const startTime = clampTime(getProjectedSyncTime(sync, duration), duration);
   state.viewerJoinGateTargetTime = clampTime(startTime + VIEWER_JOIN_GATE_MS / 1000, duration);
@@ -3929,38 +3925,32 @@ async function prepareAudibleActiveViewerJoinGatePlayback(video, duration, gateT
     currentTime: startTime,
     duration,
   });
+  beginViewerJoinGateCountdown(gateToken, false);
 
   try {
-    if (Math.abs((video.currentTime || 0) - startTime) > 0.25) {
-      video.currentTime = startTime;
-      await Promise.race([waitForSeekCompletion(video, 2500), wait(2500)]).catch(() => {});
+    if (gesturePrimePromise) {
+      await gesturePrimePromise.catch(() => false);
     }
-    await Promise.race([waitForPlayable(video), wait(3000)]).catch(() => {});
-
+    if (!video.paused) {
+      video.pause();
+    }
+    await prepareActiveViewerJoinGateBuffer(video, state.viewerJoinGateTargetTime, duration, gateToken);
+  } catch (error) {
+    console.warn("viewer paused gate failed", error);
+  } finally {
+    video.pause();
     video.muted = false;
     video.volume = 1;
-    if (started !== true && video.paused) {
-      started = await video.play().then(
-        () => true,
-        () => false
-      );
-    }
-  } catch (error) {
-    console.warn("viewer audible gate failed", error);
+    state.viewerInitialLoadActive = false;
   }
 
   if (gateToken !== state.viewerJoinGateToken) {
     return false;
   }
 
-  if (started === true || !video.paused) {
-    state.viewerInitialLoadActive = false;
-    beginViewerJoinGateCountdown(gateToken, true);
-    return true;
-  }
-
-  showViewerJoinGateAudioUnlock(gateToken);
-  return false;
+  state.viewerJoinGateReady = true;
+  updateViewerJoinGateCountdown();
+  return true;
 }
 
 function updateViewerJoinGateCountdown() {
@@ -4168,7 +4158,7 @@ async function prepareAndStartViewerJoinGatePlayback(
     state.viewerJoinGateAudioBlocked = false;
     state.viewerJoinGateAwaitingStart = false;
     setBufferingOverlayMode("join", getViewerJoinGateSeconds());
-    return prepareAudibleActiveViewerJoinGatePlayback(video, duration, gateToken, gesturePlayPromise);
+    return preparePausedActiveViewerJoinGatePlayback(video, duration, gateToken, gesturePlayPromise);
   }
 
   const startTime = clampTime(getProjectedSyncTime(sync, duration), duration);
@@ -4206,7 +4196,7 @@ async function handleViewerJoinGateAudioUnlock() {
   }
 
   markViewerStartGesture(state.roomId);
-  const gesturePlayPromise = startViewerGesturePlayback();
+  const gesturePlayPromise = primeViewerGesturePlayback();
   state.viewerJoinGateAwaitingStart = false;
   state.viewerJoinGateAudioBlocked = false;
   dom.playUnlockOverlay.classList.add("hidden");
@@ -4214,17 +4204,28 @@ async function handleViewerJoinGateAudioUnlock() {
   await prepareAndStartViewerJoinGatePlayback(true, state.viewerJoinGateToken, gesturePlayPromise);
 }
 
-function startViewerGesturePlayback() {
+function primeViewerGesturePlayback() {
   const video = dom.remoteVideo;
   if (!video?.src) {
     return Promise.resolve(false);
   }
 
+  const previousMuted = video.muted;
+  const previousVolume = video.volume;
   video.muted = false;
-  video.volume = 1;
+  video.volume = 0;
   return video.play().then(
-    () => true,
-    () => false
+    () => {
+      video.pause();
+      video.muted = previousMuted;
+      video.volume = previousVolume || 1;
+      return true;
+    },
+    () => {
+      video.muted = previousMuted;
+      video.volume = previousVolume || 1;
+      return false;
+    }
   );
 }
 
