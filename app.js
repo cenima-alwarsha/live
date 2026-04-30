@@ -45,7 +45,7 @@ const ACTIVITY_TOUCH_INTERVAL_MS = 30 * 1000;
 const IDLE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const SECRET_LIBRARY_TAPS = 5;
 const SECRET_LIBRARY_TAP_WINDOW_MS = 1200;
-const VIEWER_JOIN_GATE_MS = 10000;
+const VIEWER_JOIN_GATE_MS = 5000;
 const MAX_VIDEO_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024;
 const HOST_VIDEO_MAX_FRAMERATE = 30;
 const HOST_VIDEO_HIGH_BITRATE = 8_000_000;
@@ -158,6 +158,8 @@ const dom = {
   viewerControls: document.getElementById("viewerControls"),
   viewerCurrentTime: document.getElementById("viewerCurrentTime"),
   viewerRemainingTime: document.getElementById("viewerRemainingTime"),
+  viewerPlayStatusButton: document.getElementById("viewerPlayStatusButton"),
+  viewerPlaybackNotice: document.getElementById("viewerPlaybackNotice"),
   viewerSeekBar: document.getElementById("viewerSeekBar"),
   focusChatButton: document.getElementById("focusChatButton"),
   viewerFullscreenButton: document.getElementById("viewerFullscreenButton"),
@@ -810,6 +812,7 @@ function subscribeToRoom(roomId) {
     if (!isViewerJoinGateActive()) {
       renderViewerTime(state.roomData.sync);
     }
+    updateViewerPlaybackUi(state.roomData.sync);
     handleRoomMediaUpdate().catch((error) => console.error("media update error", error));
 
     if (!state.isHost && state.roomData?.creatorId) {
@@ -1037,6 +1040,7 @@ function updateModeUi() {
     hideHostControls();
   }
   syncViewerExpandState();
+  updateViewerPlaybackUi();
   updateWaitingOverlay();
 }
 
@@ -2639,7 +2643,7 @@ async function handleStorageMediaUpdate(film) {
   } else {
     const loadedNewMovie = await loadViewerStorageMovie(film);
     const sync = state.roomData?.sync;
-    if (isViewerJoinGateActive() && (!sync?.isPlaying || sync?.isBuffering)) {
+    if (isViewerJoinGateActive() && (sync?.isBuffering || (!sync?.isPlaying && state.viewerJoinGateUntil))) {
       clearViewerJoinGate();
       await applyStorageSync(sync);
     } else if (shouldStartViewerJoinGate(loadedNewMovie, sync)) {
@@ -2769,6 +2773,7 @@ async function applyStorageSyncNow(sync = null, force = false) {
     video.pause();
     if (isViewerStorage) {
       resetViewerPlaybackRate();
+      revealViewerControls();
     }
     dom.playUnlockOverlay.classList.add("hidden");
     if (!state.isHost && video.readyState >= 2 && !video.seeking) {
@@ -2785,6 +2790,7 @@ async function applyStorageSyncNow(sync = null, force = false) {
       currentTime: targetTime,
       duration,
     });
+    updateViewerPlaybackUi(sync);
   }
 }
 
@@ -2969,6 +2975,7 @@ async function applyYoutubeSync(sync = null, force = false, allowHost = false) {
     currentTime: targetTime,
     duration,
   });
+  updateViewerPlaybackUi(sync);
 }
 
 function getProjectedSyncTime(sync, duration = 0) {
@@ -3122,6 +3129,25 @@ function updateHostPlaybackUi() {
   setHostSeekProgress(duration ? (currentTime / duration) * 100 : 0);
   dom.hostPlayPauseButton.innerHTML = dom.hostVideo.paused ? ICONS.play : ICONS.pause;
   dom.hostPlayPauseButton.setAttribute("aria-label", dom.hostVideo.paused ? "تشغيل" : "إيقاف");
+}
+
+function updateViewerPlaybackUi(sync = state.roomData?.sync) {
+  if (!dom.viewerPlayStatusButton || !dom.viewerPlaybackNotice) {
+    return;
+  }
+
+  const isPlaying = Boolean(sync?.isPlaying && !sync?.isBuffering);
+  dom.viewerPlayStatusButton.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
+  dom.viewerPlayStatusButton.setAttribute("aria-label", isPlaying ? "الفيلم يعمل" : "الفيلم متوقف");
+
+  const currentTime = Number(sync?.currentTime || 0);
+  let notice = "";
+  if (sync && !isPlaying && isStorageMode()) {
+    notice = currentTime <= 5 * 60 ? "بانتظار المنشئ لتشغيل الفيلم" : "قام المنشئ بايقاف الفيلم";
+  }
+
+  dom.viewerPlaybackNotice.textContent = notice;
+  dom.viewerPlaybackNotice.classList.toggle("hidden", !notice);
 }
 
 function setHostSeekProgress(percent) {
@@ -3561,7 +3587,7 @@ function setBufferingOverlayMode(mode, seconds = 0) {
     }
     dom.bufferingWaitNote?.classList.remove("hidden");
     if (dom.bufferingCountdown) {
-      dom.bufferingCountdown.textContent = "10";
+      dom.bufferingCountdown.textContent = "5";
     }
     if (dom.bufferingAudioUnlockButton) {
       dom.bufferingAudioUnlockButton.textContent = "اضغط هنا لبدء تشغيل الفيلم";
@@ -3577,7 +3603,7 @@ function setBufferingOverlayMode(mode, seconds = 0) {
     }
     dom.bufferingWaitNote?.classList.add("hidden");
     if (dom.bufferingCountdown) {
-      dom.bufferingCountdown.textContent = "10";
+      dom.bufferingCountdown.textContent = "5";
     }
     if (dom.bufferingAudioUnlockButton) {
       dom.bufferingAudioUnlockButton.textContent = "اضغط هنا لبدء تشغيل الفيلم";
@@ -3603,7 +3629,7 @@ function setBufferingOverlayMode(mode, seconds = 0) {
   }
   dom.bufferingWaitNote?.classList.add("hidden");
   if (dom.bufferingCountdown) {
-    dom.bufferingCountdown.textContent = "10";
+    dom.bufferingCountdown.textContent = "5";
   }
 }
 
@@ -3714,8 +3740,9 @@ function shouldStartViewerJoinGate(loadedNewMovie, sync = null) {
     !state.isHost &&
       loadedNewMovie &&
       isStorageMode() &&
-      sync?.isPlaying &&
-      !sync?.isBuffering
+      sync &&
+      !sync?.isBuffering &&
+      (sync?.isPlaying || shouldAskViewerToStartMovie())
   );
 }
 
@@ -3815,6 +3842,51 @@ function showViewerJoinGateStartButton(gateToken = state.viewerJoinGateToken) {
   updateBufferingOverlay();
 }
 
+async function preparePausedViewerAfterStartGesture(sync = null, gateToken = state.viewerJoinGateToken) {
+  if (!state.viewerJoinGateActive || gateToken !== state.viewerJoinGateToken) {
+    return false;
+  }
+
+  const video = dom.remoteVideo;
+  const duration =
+    Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sync?.duration || getActiveFilm()?.duration || 0;
+  const targetTime = clampTime(Number(sync?.currentTime || 0), duration);
+
+  try {
+    if (video.readyState === 0) {
+      await Promise.race([waitForVideoReady(video, "loadedmetadata"), wait(2500)]).catch(() => {});
+    }
+    if (Math.abs((video.currentTime || 0) - targetTime) > 0.25) {
+      video.currentTime = targetTime;
+      await Promise.race([waitForSeekCompletion(video, 1800), wait(1800)]).catch(() => {});
+    }
+    await Promise.race([waitForPlayable(video), wait(2200)]).catch(() => {});
+    video.muted = false;
+    video.volume = 1;
+    const primed = await video.play().then(
+      () => true,
+      () => false
+    );
+    if (primed) {
+      video.pause();
+      video.currentTime = targetTime;
+    }
+  } finally {
+    state.viewerStorageInitialSynced = true;
+    state.viewerInitialLoadActive = false;
+    renderViewerTime({
+      currentTime: targetTime,
+      duration,
+    });
+    updateViewerPlaybackUi(sync);
+    clearViewerJoinGate();
+    setLocalBuffering(false);
+    revealViewerControls();
+  }
+
+  return true;
+}
+
 async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateToken = state.viewerJoinGateToken) {
   if (!state.viewerJoinGateActive || gateToken !== state.viewerJoinGateToken) {
     return false;
@@ -3827,6 +3899,10 @@ async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateTo
 
   const sync = state.roomData?.sync || {};
   if (!sync.isPlaying || sync.isBuffering) {
+    if (!sync.isBuffering) {
+      return preparePausedViewerAfterStartGesture(sync, gateToken);
+    }
+
     clearViewerJoinGate();
     await applyStorageSync(sync);
     return false;
@@ -3986,6 +4062,7 @@ async function finishViewerJoinGate() {
     currentTime: video.currentTime || expectedTime || state.viewerJoinGateTargetTime,
     duration,
   });
+  updateViewerPlaybackUi(sync);
   state.viewerJoinGateTargetTime = 0;
   state.viewerJoinGateMutedBeforePreroll = false;
   setLocalBuffering(false);
@@ -5275,11 +5352,14 @@ function revealViewerControls() {
   if (state.isHost) {
     return;
   }
+  updateViewerPlaybackUi();
   dom.viewerControls.classList.remove("hidden");
   clearTimeout(state.viewerControlsTimer);
-  state.viewerControlsTimer = window.setTimeout(() => {
-    dom.viewerControls.classList.add("hidden");
-  }, 3200);
+  if (state.roomData?.sync?.isPlaying) {
+    state.viewerControlsTimer = window.setTimeout(() => {
+      dom.viewerControls.classList.add("hidden");
+    }, 3200);
+  }
 }
 
 function hideHostControls() {
