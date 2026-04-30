@@ -3917,6 +3917,52 @@ async function prepareActiveViewerJoinGateBuffer(video, targetTime, duration, ga
   }
 }
 
+async function prepareAudibleActiveViewerJoinGatePlayback(video, duration, gateToken, gesturePlayPromise = null) {
+  let started = gesturePlayPromise
+    ? await Promise.race([gesturePlayPromise, wait(900).then(() => null)])
+    : null;
+
+  const sync = state.roomData?.sync || {};
+  const startTime = clampTime(getProjectedSyncTime(sync, duration), duration);
+  state.viewerJoinGateTargetTime = clampTime(startTime + VIEWER_JOIN_GATE_MS / 1000, duration);
+  renderViewerTime({
+    currentTime: startTime,
+    duration,
+  });
+
+  try {
+    if (Math.abs((video.currentTime || 0) - startTime) > 0.25) {
+      video.currentTime = startTime;
+      await Promise.race([waitForSeekCompletion(video, 2500), wait(2500)]).catch(() => {});
+    }
+    await Promise.race([waitForPlayable(video), wait(3000)]).catch(() => {});
+
+    video.muted = false;
+    video.volume = 1;
+    if (started !== true && video.paused) {
+      started = await video.play().then(
+        () => true,
+        () => false
+      );
+    }
+  } catch (error) {
+    console.warn("viewer audible gate failed", error);
+  }
+
+  if (gateToken !== state.viewerJoinGateToken) {
+    return false;
+  }
+
+  if (started === true || !video.paused) {
+    state.viewerInitialLoadActive = false;
+    beginViewerJoinGateCountdown(gateToken, true);
+    return true;
+  }
+
+  showViewerJoinGateAudioUnlock(gateToken);
+  return false;
+}
+
 function updateViewerJoinGateCountdown() {
   if (!state.viewerJoinGateActive) {
     return;
@@ -4092,7 +4138,11 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
   return true;
 }
 
-async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateToken = state.viewerJoinGateToken) {
+async function prepareAndStartViewerJoinGatePlayback(
+  fromGesture = false,
+  gateToken = state.viewerJoinGateToken,
+  gesturePlayPromise = null
+) {
   if (!state.viewerJoinGateActive || gateToken !== state.viewerJoinGateToken) {
     return false;
   }
@@ -4114,6 +4164,13 @@ async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateTo
   }
 
   const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sync.duration || getActiveFilm()?.duration || 0;
+  if (fromGesture) {
+    state.viewerJoinGateAudioBlocked = false;
+    state.viewerJoinGateAwaitingStart = false;
+    setBufferingOverlayMode("join", getViewerJoinGateSeconds());
+    return prepareAudibleActiveViewerJoinGatePlayback(video, duration, gateToken, gesturePlayPromise);
+  }
+
   const startTime = clampTime(getProjectedSyncTime(sync, duration), duration);
   state.viewerJoinGateTargetTime = clampTime(startTime + VIEWER_JOIN_GATE_MS / 1000, duration);
   renderViewerTime({
@@ -4149,37 +4206,26 @@ async function handleViewerJoinGateAudioUnlock() {
   }
 
   markViewerStartGesture(state.roomId);
-  await primeViewerAudioGesture();
+  const gesturePlayPromise = startViewerGesturePlayback();
   state.viewerJoinGateAwaitingStart = false;
   state.viewerJoinGateAudioBlocked = false;
   dom.playUnlockOverlay.classList.add("hidden");
   setBufferingOverlayMode("join", VIEWER_JOIN_GATE_MS / 1000);
-  await prepareAndStartViewerJoinGatePlayback(true, state.viewerJoinGateToken);
+  await prepareAndStartViewerJoinGatePlayback(true, state.viewerJoinGateToken, gesturePlayPromise);
 }
 
-async function primeViewerAudioGesture() {
+function startViewerGesturePlayback() {
   const video = dom.remoteVideo;
-  if (!video?.src || video.readyState === 0) {
-    return false;
+  if (!video?.src) {
+    return Promise.resolve(false);
   }
 
-  const previousMuted = video.muted;
-  const previousVolume = video.volume;
   video.muted = false;
-  video.volume = 0;
-
-  const started = await video.play().then(
+  video.volume = 1;
+  return video.play().then(
     () => true,
     () => false
   );
-
-  if (started) {
-    video.pause();
-  }
-
-  video.muted = previousMuted;
-  video.volume = previousVolume || 1;
-  return started;
 }
 
 async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMuted = false) {
