@@ -1721,11 +1721,22 @@ html.resume-room #connectingScreen {
 .icon-action.mic-on {
   background: rgba(214, 181, 106, 0.18);
   border-color: rgba(214, 181, 106, 0.44);
-  color: var(--gold);
 }
 
 .mic-icon {
-  font-size: 1rem;
+  width: 20px;
+  height: 20px;
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+
+.mic-icon svg,
+.participant-mic svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  fill: currentColor;
 }
 
 .send-button {

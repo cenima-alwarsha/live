@@ -87,6 +87,11 @@ const ICONS = {
       <path d="M10 7V3L3 10l7 7v-4h4.2c2.6 0 4.6 1 6 3 .3.4.9.2.8-.3-.7-5.4-3.8-8.7-8.7-8.7H10Z" />
     </svg>
   `,
+  mic: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 14.5c1.7 0 3-1.3 3-3V6c0-1.7-1.3-3-3-3S9 4.3 9 6v5.5c0 1.7 1.3 3 3 3Zm5.5-3c0 3-2.1 5.4-5 5.9V20h3v2h-7v-2h3v-2.6c-2.9-.5-5-2.9-5-5.9h2c0 2.5 1.5 4 3.5 4s3.5-1.5 3.5-4h2Z" />
+    </svg>
+  `,
 };
 
 const dom = {
@@ -2646,7 +2651,7 @@ async function handleStorageMediaUpdate(film) {
   } else {
     const loadedNewMovie = await loadViewerStorageMovie(film);
     const sync = state.roomData?.sync;
-    if (isViewerJoinGateActive() && (sync?.isBuffering || (!sync?.isPlaying && state.viewerJoinGateUntil))) {
+    if (isViewerJoinGateActive() && sync?.isBuffering) {
       clearViewerJoinGate();
       await applyStorageSync(sync);
     } else if (shouldStartViewerJoinGate(loadedNewMovie, sync)) {
@@ -2751,7 +2756,7 @@ async function applyStorageSyncNow(sync = null, force = false) {
     video.currentTime = targetTime;
   }
 
-  if (sync.isBuffering) {
+  if (sync.isBuffering && sync.isPlaying) {
     video.pause();
     dom.playUnlockOverlay.classList.add("hidden");
     renderViewerTime({
@@ -2792,7 +2797,7 @@ async function applyStorageSyncNow(sync = null, force = false) {
       revealViewerControls();
     }
     dom.playUnlockOverlay.classList.add("hidden");
-    if (!state.isHost && video.readyState >= 2 && !video.seeking) {
+    if (!state.isHost) {
       setLocalBuffering(false);
     }
   }
@@ -2996,7 +3001,8 @@ async function applyYoutubeSync(sync = null, force = false, allowHost = false) {
 
 function getProjectedSyncTime(sync, duration = 0) {
   const baseTime = Number(sync?.currentTime || 0);
-  const drift = sync?.isPlaying ? Math.max((Date.now() - (sync.updatedAt || Date.now())) / 1000, 0) : 0;
+  const drift =
+    sync?.isPlaying && !sync?.isBuffering ? Math.max((Date.now() - (sync.updatedAt || Date.now())) / 1000, 0) : 0;
   const projected = baseTime + drift;
   return duration ? Math.min(projected, Math.max(duration - 0.2, 0)) : projected;
 }
@@ -3662,7 +3668,9 @@ function scheduleViewerBuffering(delay = 1300) {
   clearViewerBufferingTimer();
   state.viewerBufferingTimer = window.setTimeout(() => {
     state.viewerBufferingTimer = null;
-    if (!state.isHost && isStorageMode() && state.screen === "room") {
+    const sync = state.roomData?.sync || {};
+    const hostExpectsMotion = Boolean(sync.isPlaying || dom.remoteVideo.seeking);
+    if (!state.isHost && isStorageMode() && state.screen === "room" && hostExpectsMotion) {
       state.localBuffering = true;
       updateBufferingOverlay();
     }
@@ -3867,13 +3875,13 @@ async function startViewerJoinGate(sync = null) {
   return true;
 }
 
-function beginViewerJoinGateCountdown(gateToken = state.viewerJoinGateToken) {
+function beginViewerJoinGateCountdown(gateToken = state.viewerJoinGateToken, ready = true) {
   if (!state.viewerJoinGateActive || state.viewerJoinGateUntil || gateToken !== state.viewerJoinGateToken) {
     return;
   }
 
   state.viewerJoinGateAudioBlocked = false;
-  state.viewerJoinGateReady = true;
+  state.viewerJoinGateReady = ready;
   state.viewerJoinGatePrerollStarted = true;
   state.viewerJoinGateUntil = Date.now() + VIEWER_JOIN_GATE_MS;
   setBufferingOverlayMode("join", getViewerJoinGateSeconds());
@@ -3932,6 +3940,9 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
     Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sync?.duration || getActiveFilm()?.duration || 0;
   const targetTime = clampTime(Number(sync?.currentTime || 0), duration);
 
+  setBufferingOverlayMode("join", getViewerJoinGateSeconds());
+  beginViewerJoinGateCountdown(gateToken, false);
+
   try {
     if (video.readyState === 0) {
       await Promise.race([waitForVideoReady(video, "loadedmetadata"), wait(2500)]).catch(() => {});
@@ -3941,7 +3952,7 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
       await Promise.race([waitForSeekCompletion(video, 1800), wait(1800)]).catch(() => {});
     }
     await Promise.race([waitForPlayable(video), wait(2200)]).catch(() => {});
-    await waitForBufferedAhead(video, targetTime, 4, 5200).catch(() => false);
+    await waitForBufferedAhead(video, targetTime, 10, VIEWER_JOIN_GATE_MS - 1500).catch(() => false);
     video.muted = false;
     video.volume = 1;
     const primed = await video.play().then(
@@ -3952,7 +3963,7 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
       video.pause();
       video.currentTime = targetTime;
     }
-    await waitForBufferedAhead(video, targetTime, 4, 2200).catch(() => false);
+    await waitForBufferedAhead(video, targetTime, 10, 2200).catch(() => false);
     markViewerPausedPrepared(targetTime);
   } finally {
     state.viewerStorageInitialSynced = true;
@@ -3962,9 +3973,11 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
       duration,
     });
     updateViewerPlaybackUi(sync);
-    clearViewerJoinGate();
-    setLocalBuffering(false);
     revealViewerControls();
+    if (state.viewerJoinGateActive && gateToken === state.viewerJoinGateToken) {
+      state.viewerJoinGateReady = true;
+      updateViewerJoinGateCountdown();
+    }
   }
 
   return true;
@@ -4152,7 +4165,7 @@ async function finishViewerJoinGate() {
 }
 
 function updateBufferingOverlay() {
-  const roomBuffering = Boolean(state.roomData?.sync?.isBuffering);
+  const roomBuffering = Boolean(state.roomData?.sync?.isBuffering && state.roomData?.sync?.isPlaying);
   const joinGate = isViewerJoinGateActive();
   const shouldShow = state.screen === "room" && (joinGate || state.localBuffering || (!state.isHost && roomBuffering));
   if (joinGate && state.viewerJoinGateAwaitingStart) {
@@ -4185,7 +4198,7 @@ function handleHostBufferingEvent(isBuffering) {
     }
     state.lastBufferingSyncAt = now;
     const duration = getHostSeekDuration();
-    publishManualHostSync(dom.hostVideo.currentTime || 0, duration, false, true).catch((error) =>
+    publishManualHostSync(dom.hostVideo.currentTime || 0, duration, true, true).catch((error) =>
       console.error("buffering sync error", error)
     );
     return;
@@ -4208,7 +4221,13 @@ function handleViewerBufferingEvent(isBuffering) {
   if (isBuffering) {
     const sync = state.roomData?.sync || {};
     const isInitialFrameLoading = state.viewerInitialLoadActive || dom.remoteVideo.readyState < 2;
-    const isExpectedSeekLoading = Boolean(sync.isBuffering || dom.remoteVideo.seeking);
+    const isExpectedSeekLoading = Boolean((sync.isBuffering && sync.isPlaying) || dom.remoteVideo.seeking);
+    const hostPaused = Boolean(sync && !sync.isPlaying && !sync.isBuffering);
+
+    if (hostPaused && !isInitialFrameLoading && !state.viewerJoinGateActive) {
+      setLocalBuffering(false);
+      return;
+    }
 
     if (isInitialFrameLoading) {
       setLocalBuffering(true);
@@ -4538,7 +4557,7 @@ function renderParticipants() {
 
     const mic = document.createElement("div");
     mic.className = `participant-mic ${member.micEnabled ? "" : "off"}`;
-    mic.textContent = "🎤";
+    mic.innerHTML = ICONS.mic;
 
     item.append(avatar, textWrap, mic);
     dom.participantsList.append(item);
