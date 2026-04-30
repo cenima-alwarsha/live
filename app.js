@@ -265,6 +265,9 @@ const state = {
   viewerJoinGateTimer: null,
   viewerJoinGateToken: 0,
   viewerCatchupTimer: null,
+  viewerPausedPreparedPath: "",
+  viewerPausedPreparedTime: 0,
+  viewerPausedPreparedAt: 0,
   viewerReconnectTimer: null,
   viewerMicTrack: null,
   viewerMicSender: null,
@@ -2678,6 +2681,7 @@ async function loadViewerStorageMovie(film) {
   closeAllPeers();
   stopViewerCanvasLoop();
   state.viewerRemoteStream = null;
+  clearViewerPausedPreparation();
   dom.remoteAudio.pause();
   dom.remoteAudio.srcObject = null;
   dom.remoteVideo.pause();
@@ -2759,6 +2763,14 @@ async function applyStorageSyncNow(sync = null, force = false) {
   }
 
   if (sync.isPlaying) {
+    if (isViewerStorage && video.paused && isViewerPausedPreparationFresh(targetTime)) {
+      const preparedAhead = getBufferedAhead(video, currentTime || targetTime);
+      if (preparedAhead < 1.2) {
+        setLocalBuffering(true);
+        await waitForBufferedAhead(video, targetTime, 2.5, 2200).catch(() => false);
+      }
+    }
+
     const started = isViewerStorage
       ? await playViewerStorageWithFallback(video, false)
       : await video.play().then(
@@ -2766,6 +2778,9 @@ async function applyStorageSyncNow(sync = null, force = false) {
           () => false
         );
     dom.playUnlockOverlay.classList.toggle("hidden", state.isHost || started);
+    if (isViewerStorage && started) {
+      clearViewerPausedPreparation();
+    }
     if (!state.isHost && started && video.readyState >= 3 && !video.seeking) {
       setLocalBuffering(false);
     }
@@ -2773,6 +2788,7 @@ async function applyStorageSyncNow(sync = null, force = false) {
     video.pause();
     if (isViewerStorage) {
       resetViewerPlaybackRate();
+      markViewerPausedPrepared(targetTime);
       revealViewerControls();
     }
     dom.playUnlockOverlay.classList.add("hidden");
@@ -3709,6 +3725,70 @@ function nudgeViewerCatchup(secondsBehind) {
   state.viewerCatchupTimer = window.setTimeout(resetViewerPlaybackRate, duration);
 }
 
+function clearViewerPausedPreparation() {
+  state.viewerPausedPreparedPath = "";
+  state.viewerPausedPreparedTime = 0;
+  state.viewerPausedPreparedAt = 0;
+}
+
+function markViewerPausedPrepared(time = 0) {
+  state.viewerPausedPreparedPath = dom.remoteVideo.dataset.storagePath || "";
+  state.viewerPausedPreparedTime = time || 0;
+  state.viewerPausedPreparedAt = Date.now();
+}
+
+function isViewerPausedPreparationFresh(targetTime = 0) {
+  return Boolean(
+    state.viewerPausedPreparedPath &&
+      state.viewerPausedPreparedPath === (dom.remoteVideo.dataset.storagePath || "") &&
+      Date.now() - state.viewerPausedPreparedAt < IDLE_ROOM_TTL_MS &&
+      Math.abs((state.viewerPausedPreparedTime || 0) - (targetTime || 0)) < 3
+  );
+}
+
+function getBufferedAhead(video, time = video.currentTime || 0) {
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (time >= start - 0.05 && time <= end + 0.05) {
+      return Math.max(end - time, 0);
+    }
+  }
+  return 0;
+}
+
+async function waitForBufferedAhead(video, time, seconds = 3, timeout = 4500) {
+  const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+  const needed = duration ? Math.min(seconds, Math.max(duration - time - 0.25, 0.75)) : seconds;
+  if (getBufferedAhead(video, time) >= needed || video.readyState >= 4) {
+    return true;
+  }
+
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    let timer = null;
+    const events = ["progress", "canplay", "canplaythrough", "loadeddata"];
+    const cleanup = (value) => {
+      clearInterval(timer);
+      events.forEach((eventName) => video.removeEventListener(eventName, check));
+      resolve(value);
+    };
+    const check = () => {
+      if (getBufferedAhead(video, time) >= needed || video.readyState >= 4) {
+        cleanup(true);
+        return;
+      }
+      if (Date.now() - startedAt >= timeout) {
+        cleanup(false);
+      }
+    };
+
+    events.forEach((eventName) => video.addEventListener(eventName, check));
+    timer = window.setInterval(check, 180);
+    check();
+  });
+}
+
 function updateViewerJoinGateCountdown() {
   if (!state.viewerJoinGateActive) {
     return;
@@ -3861,6 +3941,7 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
       await Promise.race([waitForSeekCompletion(video, 1800), wait(1800)]).catch(() => {});
     }
     await Promise.race([waitForPlayable(video), wait(2200)]).catch(() => {});
+    await waitForBufferedAhead(video, targetTime, 4, 5200).catch(() => false);
     video.muted = false;
     video.volume = 1;
     const primed = await video.play().then(
@@ -3871,6 +3952,8 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
       video.pause();
       video.currentTime = targetTime;
     }
+    await waitForBufferedAhead(video, targetTime, 4, 2200).catch(() => false);
+    markViewerPausedPrepared(targetTime);
   } finally {
     state.viewerStorageInitialSynced = true;
     state.viewerInitialLoadActive = false;
