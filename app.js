@@ -36,6 +36,7 @@ const ROUTE_STORAGE_KEY = "cinema-al-warsha-route";
 const NAME_STORAGE_KEY = "cinema-al-warsha-name";
 const SESSION_STORAGE_KEY = "cinema-al-warsha-sessions";
 const ACTIVE_ROOM_STORAGE_KEY = "cinema-al-warsha-active-room";
+const VIEWER_START_STORAGE_KEY = "cinema-al-warsha-viewer-starts";
 const HOST_MEDIA_DB_NAME = "cinema-al-warsha-db";
 const HOST_MEDIA_STORE_NAME = "host-media";
 const YOUTUBE_SEARCH_API_KEY = firebaseConfig.apiKey;
@@ -256,6 +257,7 @@ const state = {
   viewerJoinGatePrerollStarted: false,
   viewerJoinGateMutedBeforePreroll: false,
   viewerJoinGateAudioBlocked: false,
+  viewerJoinGateAwaitingStart: false,
   viewerJoinGateUntil: 0,
   viewerJoinGateTargetTime: 0,
   viewerJoinGateTimer: null,
@@ -417,7 +419,10 @@ function attachEvents() {
     handleViewerJoinGateAudioUnlock().catch((error) => console.error("audio unlock failed", error));
   });
   dom.bufferingOverlay?.addEventListener("click", (event) => {
-    if (event.target.closest("button") || !state.viewerJoinGateAudioBlocked) {
+    if (
+      event.target.closest("button") ||
+      (!state.viewerJoinGateAudioBlocked && !state.viewerJoinGateAwaitingStart)
+    ) {
       return;
     }
     handleViewerJoinGateAudioUnlock().catch((error) => console.error("audio unlock failed", error));
@@ -2633,10 +2638,14 @@ async function handleStorageMediaUpdate(film) {
     }
   } else {
     const loadedNewMovie = await loadViewerStorageMovie(film);
-    if (shouldStartViewerJoinGate(loadedNewMovie, state.roomData?.sync)) {
-      await startViewerJoinGate(state.roomData?.sync);
+    const sync = state.roomData?.sync;
+    if (isViewerJoinGateActive() && (!sync?.isPlaying || sync?.isBuffering)) {
+      clearViewerJoinGate();
+      await applyStorageSync(sync);
+    } else if (shouldStartViewerJoinGate(loadedNewMovie, sync)) {
+      await startViewerJoinGate(sync);
     } else if (!isViewerJoinGateActive()) {
-      await applyStorageSync(state.roomData?.sync);
+      await applyStorageSync(sync);
     }
     scheduleViewerReconnect(350);
   }
@@ -3548,11 +3557,30 @@ function setBufferingOverlayMode(mode, seconds = 0) {
 
   if (mode === "join-audio") {
     if (dom.bufferingLabel) {
-      dom.bufferingLabel.textContent = "اضغط لتفعيل الصوت";
+      dom.bufferingLabel.textContent = "اضغط هنا لبدء تشغيل الفيلم";
     }
     dom.bufferingWaitNote?.classList.remove("hidden");
     if (dom.bufferingCountdown) {
       dom.bufferingCountdown.textContent = "10";
+    }
+    if (dom.bufferingAudioUnlockButton) {
+      dom.bufferingAudioUnlockButton.textContent = "اضغط هنا لبدء تشغيل الفيلم";
+    }
+    dom.bufferingAudioUnlockButton?.classList.remove("hidden");
+    dom.bufferingOverlay?.classList.add("needs-audio");
+    return;
+  }
+
+  if (mode === "join-start") {
+    if (dom.bufferingLabel) {
+      dom.bufferingLabel.textContent = "اضغط هنا لبدء تشغيل الفيلم";
+    }
+    dom.bufferingWaitNote?.classList.add("hidden");
+    if (dom.bufferingCountdown) {
+      dom.bufferingCountdown.textContent = "10";
+    }
+    if (dom.bufferingAudioUnlockButton) {
+      dom.bufferingAudioUnlockButton.textContent = "اضغط هنا لبدء تشغيل الفيلم";
     }
     dom.bufferingAudioUnlockButton?.classList.remove("hidden");
     dom.bufferingOverlay?.classList.add("needs-audio");
@@ -3624,6 +3652,7 @@ function clearViewerJoinGate() {
   state.viewerJoinGatePrerollStarted = false;
   state.viewerJoinGateMutedBeforePreroll = false;
   state.viewerJoinGateAudioBlocked = false;
+  state.viewerJoinGateAwaitingStart = false;
   state.viewerJoinGateUntil = 0;
   state.viewerJoinGateTargetTime = 0;
   state.viewerJoinGateToken += 1;
@@ -3665,6 +3694,12 @@ function updateViewerJoinGateCountdown() {
     return;
   }
 
+  if (state.viewerJoinGateAwaitingStart) {
+    setBufferingOverlayMode("join-start");
+    updateBufferingOverlay();
+    return;
+  }
+
   const seconds = getViewerJoinGateSeconds();
   setBufferingOverlayMode("join", seconds);
   updateBufferingOverlay();
@@ -3684,6 +3719,10 @@ function shouldStartViewerJoinGate(loadedNewMovie, sync = null) {
   );
 }
 
+function shouldAskViewerToStartMovie() {
+  return Boolean(!state.isHost && state.roomId && !hasViewerStartGesture(state.roomId));
+}
+
 async function startViewerJoinGate(sync = null) {
   if (!shouldStartViewerJoinGate(true, sync) || state.viewerJoinGateActive) {
     return false;
@@ -3696,6 +3735,7 @@ async function startViewerJoinGate(sync = null) {
   state.viewerJoinGatePrerollStarted = false;
   state.viewerJoinGateMutedBeforePreroll = false;
   state.viewerJoinGateAudioBlocked = false;
+  state.viewerJoinGateAwaitingStart = false;
   state.viewerJoinGateUntil = 0;
   state.viewerJoinGateTargetTime = 0;
   state.viewerStorageSyncing = true;
@@ -3703,6 +3743,12 @@ async function startViewerJoinGate(sync = null) {
 
   dom.playUnlockOverlay.classList.add("hidden");
   setLocalBuffering(true);
+  if (shouldAskViewerToStartMovie()) {
+    showViewerJoinGateStartButton(gateToken);
+    state.viewerStorageSyncing = false;
+    return true;
+  }
+
   setBufferingOverlayMode("join", getViewerJoinGateSeconds());
 
   try {
@@ -3738,6 +3784,7 @@ function showViewerJoinGateAudioUnlock(gateToken = state.viewerJoinGateToken) {
 
   state.viewerJoinGateReady = true;
   state.viewerJoinGateAudioBlocked = true;
+  state.viewerJoinGateAwaitingStart = false;
   state.viewerJoinGatePrerollStarted = false;
   state.viewerJoinGateUntil = 0;
   if (state.viewerJoinGateTimer) {
@@ -3746,6 +3793,25 @@ function showViewerJoinGateAudioUnlock(gateToken = state.viewerJoinGateToken) {
   }
   setLocalBuffering(true);
   setBufferingOverlayMode("join-audio");
+  updateBufferingOverlay();
+}
+
+function showViewerJoinGateStartButton(gateToken = state.viewerJoinGateToken) {
+  if (!state.viewerJoinGateActive || gateToken !== state.viewerJoinGateToken) {
+    return;
+  }
+
+  state.viewerJoinGateReady = true;
+  state.viewerJoinGateAudioBlocked = false;
+  state.viewerJoinGateAwaitingStart = true;
+  state.viewerJoinGatePrerollStarted = false;
+  state.viewerJoinGateUntil = 0;
+  if (state.viewerJoinGateTimer) {
+    clearInterval(state.viewerJoinGateTimer);
+    state.viewerJoinGateTimer = null;
+  }
+  setLocalBuffering(true);
+  setBufferingOverlayMode("join-start");
   updateBufferingOverlay();
 }
 
@@ -3760,6 +3826,12 @@ async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateTo
   }
 
   const sync = state.roomData?.sync || {};
+  if (!sync.isPlaying || sync.isBuffering) {
+    clearViewerJoinGate();
+    await applyStorageSync(sync);
+    return false;
+  }
+
   const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : sync.duration || getActiveFilm()?.duration || 0;
   const startTime = clampTime(getProjectedSyncTime(sync, duration), duration);
   state.viewerJoinGateTargetTime = clampTime(startTime + VIEWER_JOIN_GATE_MS / 1000, duration);
@@ -3779,6 +3851,7 @@ async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateTo
   video.muted = false;
   video.volume = 1;
   state.viewerJoinGateAudioBlocked = false;
+  state.viewerJoinGateAwaitingStart = false;
   setBufferingOverlayMode("join", getViewerJoinGateSeconds());
 
   let playRejected = false;
@@ -3832,10 +3905,13 @@ async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateTo
 }
 
 async function handleViewerJoinGateAudioUnlock() {
-  if (!state.viewerJoinGateActive || !state.viewerJoinGateAudioBlocked) {
+  if (!state.viewerJoinGateActive || (!state.viewerJoinGateAudioBlocked && !state.viewerJoinGateAwaitingStart)) {
     return;
   }
 
+  markViewerStartGesture(state.roomId);
+  state.viewerJoinGateAwaitingStart = false;
+  state.viewerJoinGateAudioBlocked = false;
   dom.playUnlockOverlay.classList.add("hidden");
   setBufferingOverlayMode("join", VIEWER_JOIN_GATE_MS / 1000);
   await prepareAndStartViewerJoinGatePlayback(true, state.viewerJoinGateToken);
@@ -3919,7 +3995,9 @@ function updateBufferingOverlay() {
   const roomBuffering = Boolean(state.roomData?.sync?.isBuffering);
   const joinGate = isViewerJoinGateActive();
   const shouldShow = state.screen === "room" && (joinGate || state.localBuffering || (!state.isHost && roomBuffering));
-  if (joinGate && state.viewerJoinGateAudioBlocked) {
+  if (joinGate && state.viewerJoinGateAwaitingStart) {
+    setBufferingOverlayMode("join-start");
+  } else if (joinGate && state.viewerJoinGateAudioBlocked) {
     setBufferingOverlayMode("join-audio");
   } else if (joinGate) {
     setBufferingOverlayMode("join", getViewerJoinGateSeconds());
@@ -5956,6 +6034,51 @@ function parseStoredSessions(value) {
   }
 }
 
+function getViewerStartGestures() {
+  return {
+    ...parseStoredSessions(readStorageValue(sessionStorage, VIEWER_START_STORAGE_KEY)),
+    ...parseStoredSessions(readStorageValue(localStorage, VIEWER_START_STORAGE_KEY)),
+  };
+}
+
+function hasViewerStartGesture(roomId) {
+  if (!roomId) {
+    return false;
+  }
+  return Boolean(getViewerStartGestures()[roomId]);
+}
+
+function markViewerStartGesture(roomId) {
+  if (!roomId) {
+    return;
+  }
+
+  const gestures = getViewerStartGestures();
+  gestures[roomId] = Date.now();
+
+  const roomIds = Object.keys(gestures).sort((first, second) => (gestures[second] || 0) - (gestures[first] || 0));
+  const compactGestures = {};
+  roomIds.slice(0, 80).forEach((id) => {
+    compactGestures[id] = gestures[id];
+  });
+
+  const serialized = JSON.stringify(compactGestures);
+  writeStorageValue(localStorage, VIEWER_START_STORAGE_KEY, serialized);
+  writeStorageValue(sessionStorage, VIEWER_START_STORAGE_KEY, serialized);
+}
+
+function clearViewerStartGesture(roomId) {
+  if (!roomId) {
+    return;
+  }
+
+  const gestures = getViewerStartGestures();
+  delete gestures[roomId];
+  const serialized = JSON.stringify(gestures);
+  writeStorageValue(localStorage, VIEWER_START_STORAGE_KEY, serialized);
+  writeStorageValue(sessionStorage, VIEWER_START_STORAGE_KEY, serialized);
+}
+
 function getRoomSession(roomId) {
   const sessions = getStoredSessions();
   return sessions[roomId] || null;
@@ -6027,6 +6150,7 @@ function clearRoomSession(roomId) {
   const serialized = JSON.stringify(sessions);
   writeStorageValue(localStorage, SESSION_STORAGE_KEY, serialized);
   writeStorageValue(sessionStorage, SESSION_STORAGE_KEY, serialized);
+  clearViewerStartGesture(roomId);
   clearActiveRoomId(roomId);
 }
 
