@@ -3843,7 +3843,7 @@ async function warmPausedViewerBuffer(video, targetTime, duration, gateToken) {
   let started = false;
 
   try {
-    video.muted = true;
+    video.muted = false;
     video.volume = 0;
     started = await video.play().then(
       () => true,
@@ -3887,7 +3887,7 @@ async function prepareActiveViewerJoinGateBuffer(video, targetTime, duration, ga
     await Promise.race([waitForPlayable(video), wait(3000)]).catch(() => {});
     await waitForBufferedAhead(video, targetTime, Math.min(warmSeconds, 3), 2600).catch(() => false);
 
-    video.muted = true;
+    video.muted = false;
     video.volume = 0;
     const started = await video.play().then(
       () => true,
@@ -3981,12 +3981,7 @@ function updateViewerJoinGateCountdown() {
 
 function shouldStartViewerJoinGate(loadedNewMovie, sync = null) {
   return Boolean(
-    !state.isHost &&
-      loadedNewMovie &&
-      isStorageMode() &&
-      sync &&
-      !sync?.isBuffering &&
-      (sync?.isPlaying || shouldAskViewerToStartMovie())
+    !state.isHost && loadedNewMovie && isStorageMode() && sync && !sync?.isBuffering
   );
 }
 
@@ -4014,20 +4009,8 @@ async function startViewerJoinGate(sync = null) {
 
   dom.playUnlockOverlay.classList.add("hidden");
   setLocalBuffering(true);
-  if (shouldAskViewerToStartMovie()) {
-    showViewerJoinGateStartButton(gateToken);
-    state.viewerStorageSyncing = false;
-    return true;
-  }
-
-  setBufferingOverlayMode("join", getViewerJoinGateSeconds());
-
-  try {
-    await prepareAndStartViewerJoinGatePlayback(false, gateToken);
-  } finally {
-    state.viewerStorageSyncing = false;
-  }
-
+  showViewerJoinGateStartButton(gateToken);
+  state.viewerStorageSyncing = false;
   return true;
 }
 
