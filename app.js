@@ -3874,6 +3874,49 @@ async function warmPausedViewerBuffer(video, targetTime, duration, gateToken) {
   }
 }
 
+async function prepareActiveViewerJoinGateBuffer(video, targetTime, duration, gateToken) {
+  const warmSeconds = duration ? Math.min(5, Math.max(duration - targetTime - 0.3, 0.75)) : 5;
+  const warmEnd = clampTime(targetTime + warmSeconds, duration);
+
+  try {
+    if (Math.abs((video.currentTime || 0) - targetTime) > 0.25) {
+      video.currentTime = targetTime;
+      await Promise.race([waitForSeekCompletion(video, 2500), wait(2500)]).catch(() => {});
+    }
+
+    await Promise.race([waitForPlayable(video), wait(3000)]).catch(() => {});
+    await waitForBufferedAhead(video, targetTime, Math.min(warmSeconds, 3), 2600).catch(() => false);
+
+    video.muted = true;
+    video.volume = 0;
+    const started = await video.play().then(
+      () => true,
+      () => false
+    );
+
+    if (started) {
+      const remaining = state.viewerJoinGateUntil ? getViewerJoinGateRemainingMs() : VIEWER_JOIN_GATE_MS;
+      const warmTimeout = Math.max(Math.min(remaining - 700, 4300), 1300);
+      await waitForPausedWarmup(video, targetTime, warmEnd, warmSeconds, warmTimeout, gateToken);
+    }
+  } finally {
+    video.pause();
+    video.playbackRate = 1;
+    video.muted = false;
+    video.volume = 1;
+
+    if (gateToken === state.viewerJoinGateToken) {
+      if (Math.abs((video.currentTime || 0) - targetTime) > 0.25) {
+        video.currentTime = targetTime;
+        await Promise.race([waitForSeekCompletion(video, 1200), wait(1200)]).catch(() => {});
+      }
+      await Promise.race([waitForPlayable(video), wait(1500)]).catch(() => {});
+      await waitForBufferedAhead(video, targetTime, Math.min(warmSeconds, 4), 1800).catch(() => false);
+      markViewerPausedPrepared(targetTime);
+    }
+  }
+}
+
 function updateViewerJoinGateCountdown() {
   if (!state.viewerJoinGateActive) {
     return;
@@ -4078,68 +4121,26 @@ async function prepareAndStartViewerJoinGatePlayback(fromGesture = false, gateTo
     duration,
   });
 
-  try {
-    if (Math.abs((video.currentTime || 0) - startTime) > 0.25) {
-      video.currentTime = startTime;
-    }
-  } catch (error) {
-    console.warn("viewer gate seek failed", error);
-  }
-
-  video.muted = false;
-  video.volume = 1;
   state.viewerJoinGateAudioBlocked = false;
   state.viewerJoinGateAwaitingStart = false;
   setBufferingOverlayMode("join", getViewerJoinGateSeconds());
+  beginViewerJoinGateCountdown(gateToken, false);
 
-  let playRejected = false;
-  const playPromise = video.play().then(
-    () => true,
-    (error) => {
-      playRejected = true;
-      console.warn("audible autoplay blocked", error);
-      return false;
-    }
-  );
-
-  const started = await Promise.race([
-    playPromise,
-    waitForVideoReady(video, "playing").then(
-      () => true,
-      () => false
-    ),
-    wait(fromGesture ? 2500 : 1200).then(() => null),
-  ]);
+  try {
+    await prepareActiveViewerJoinGateBuffer(video, state.viewerJoinGateTargetTime, duration, gateToken);
+  } catch (error) {
+    console.warn("viewer gate future buffer failed", error);
+  } finally {
+    state.viewerInitialLoadActive = false;
+  }
 
   if (gateToken !== state.viewerJoinGateToken) {
     return false;
   }
 
-  if (started === true || (!video.paused && !video.muted)) {
-    await Promise.race([waitForSeekCompletion(video, 2500), wait(2500)]).catch(() => {});
-    await Promise.race([waitForPlayable(video), wait(3500)]).catch(() => {});
-    state.viewerInitialLoadActive = false;
-    beginViewerJoinGateCountdown(gateToken);
-    return true;
-  }
-
-  if (playRejected || started === false) {
-    showViewerJoinGateAudioUnlock(gateToken);
-    return false;
-  }
-
-  playPromise.then((allowed) => {
-    if (!state.viewerJoinGateActive || state.viewerJoinGateUntil || gateToken !== state.viewerJoinGateToken) {
-      return;
-    }
-    if (allowed || (!video.paused && !video.muted)) {
-      state.viewerInitialLoadActive = false;
-      beginViewerJoinGateCountdown(gateToken);
-      return;
-    }
-    showViewerJoinGateAudioUnlock(gateToken);
-  });
-  return false;
+  state.viewerJoinGateReady = true;
+  updateViewerJoinGateCountdown();
+  return true;
 }
 
 async function handleViewerJoinGateAudioUnlock() {
@@ -4148,11 +4149,37 @@ async function handleViewerJoinGateAudioUnlock() {
   }
 
   markViewerStartGesture(state.roomId);
+  await primeViewerAudioGesture();
   state.viewerJoinGateAwaitingStart = false;
   state.viewerJoinGateAudioBlocked = false;
   dom.playUnlockOverlay.classList.add("hidden");
   setBufferingOverlayMode("join", VIEWER_JOIN_GATE_MS / 1000);
   await prepareAndStartViewerJoinGatePlayback(true, state.viewerJoinGateToken);
+}
+
+async function primeViewerAudioGesture() {
+  const video = dom.remoteVideo;
+  if (!video?.src || video.readyState === 0) {
+    return false;
+  }
+
+  const previousMuted = video.muted;
+  const previousVolume = video.volume;
+  video.muted = false;
+  video.volume = 0;
+
+  const started = await video.play().then(
+    () => true,
+    () => false
+  );
+
+  if (started) {
+    video.pause();
+  }
+
+  video.muted = previousMuted;
+  video.volume = previousVolume || 1;
+  return started;
 }
 
 async function playViewerStorageWithFallback(video = dom.remoteVideo, restoreMuted = false) {
@@ -4203,16 +4230,26 @@ async function finishViewerJoinGate() {
   setBufferingOverlayMode("normal");
 
   if (sync.isPlaying && !sync.isBuffering) {
-    const drift = expectedTime - (video.currentTime || 0);
-    if (Math.abs(drift) > 2.4) {
-      video.currentTime = expectedTime;
-      await Promise.race([waitForSeekCompletion(video, 1300), wait(1300)]).catch(() => {});
+    const preparedTarget = state.viewerJoinGateTargetTime || 0;
+    const canUsePreparedTarget =
+      preparedTarget && Math.abs(preparedTarget - expectedTime) <= 2.5 && getBufferedAhead(video, preparedTarget) > 0.5;
+    const playbackTime = canUsePreparedTarget ? preparedTarget : expectedTime;
+    const drift = playbackTime - (video.currentTime || 0);
+
+    if (Math.abs(drift) > 0.35 && (getBufferedAhead(video, playbackTime) > 0.5 || Math.abs(drift) > 2.4)) {
+      video.currentTime = playbackTime;
+      await Promise.race([waitForSeekCompletion(video, 900), wait(900)]).catch(() => {});
     } else if (drift > 0.35) {
       nudgeViewerCatchup(drift);
     }
 
     video.muted = false;
-    await playViewerStorageWithFallback(video, false);
+    const started = await playViewerStorageWithFallback(video, false);
+    if (!started) {
+      dom.playUnlockOverlay.classList.remove("hidden");
+    } else if (expectedTime - (video.currentTime || playbackTime) > 0.35) {
+      nudgeViewerCatchup(expectedTime - (video.currentTime || playbackTime));
+    }
   } else {
     video.pause();
     resetViewerPlaybackRate();
