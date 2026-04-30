@@ -341,7 +341,6 @@ const state = {
 
 restorePrettyRoute();
 attachEvents();
-startIdleCleanup();
 boot().catch((error) => {
   console.error(error);
   switchScreen("home");
@@ -887,8 +886,7 @@ function getRoomLastActivity(roomData) {
 }
 
 function isRoomIdle(roomData) {
-  const lastActivity = getRoomLastActivity(roomData);
-  return Boolean(lastActivity && Date.now() - lastActivity > IDLE_ROOM_TTL_MS);
+  return false;
 }
 
 function shouldTouchRoomActivity(now = Date.now(), force = false) {
@@ -908,7 +906,11 @@ async function touchRoomIndex(roomId, lastActivity = Date.now()) {
   await set(ref(db, `roomIndex/${roomId}`), { lastActivity });
 }
 
-async function deleteRoomById(roomId) {
+async function deleteRoomById(roomId, options = {}) {
+  if (!options.explicit) {
+    return;
+  }
+
   if (!/^\d{4}$/.test(roomId || "")) {
     return;
   }
@@ -928,29 +930,11 @@ async function deleteRoomById(roomId) {
 }
 
 function startIdleCleanup() {
-  cleanupIdleRooms().catch((error) => console.warn("idle cleanup failed", error));
-  state.idleCleanupTimer = window.setInterval(() => {
-    cleanupIdleRooms().catch((error) => console.warn("idle cleanup failed", error));
-  }, IDLE_CLEANUP_INTERVAL_MS);
+  return;
 }
 
 async function cleanupIdleRooms() {
-  const snapshot = await get(ref(db, "roomIndex")).catch(() => null);
-  if (!snapshot?.exists()) {
-    return;
-  }
-
-  const now = Date.now();
-  const deletions = [];
-  snapshot.forEach((child) => {
-    const roomId = child.key;
-    const lastActivity = Number(child.val()?.lastActivity || 0);
-    if (/^\d{4}$/.test(roomId || "") && lastActivity && now - lastActivity > IDLE_ROOM_TTL_MS) {
-      deletions.push(deleteRoomById(roomId));
-    }
-  });
-
-  await Promise.allSettled(deletions);
+  return;
 }
 
 function buildMemberPayload() {
@@ -4832,7 +4816,7 @@ async function deleteCurrentRoom(successMessage = "تم حذف الغرفة.") {
   closeMembersDrawer();
   resetHostMovieState();
 
-  await deleteRoomById(roomId);
+  await deleteRoomById(roomId, { explicit: true });
 
   clearRoomSession(roomId);
   if (wasHost) {
