@@ -1095,6 +1095,11 @@ html.resume-room #connectingScreen {
   backdrop-filter: blur(2px);
 }
 
+.buffering-overlay.needs-audio {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 .buffering-spinner {
   width: clamp(48px, 10vw, 68px);
   height: clamp(48px, 10vw, 68px);
@@ -1117,6 +1122,20 @@ html.resume-room #connectingScreen {
   color: var(--cream);
   font-weight: 900;
   font-size: 0.84rem;
+}
+
+.buffering-audio-unlock {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: linear-gradient(135deg, #f4dca0, #d6b56a);
+  color: #050a11;
+  font-family: inherit;
+  font-weight: 900;
+  font-size: 0.95rem;
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.28),
+    0 0 30px rgba(214, 181, 106, 0.24);
 }
 
 .buffering-wait-note {
