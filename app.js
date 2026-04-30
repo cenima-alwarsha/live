@@ -2769,7 +2769,11 @@ async function applyStorageSyncNow(sync = null, force = false) {
 
   if (sync.isPlaying) {
     if (isViewerStorage && video.paused && isViewerPausedPreparationFresh(targetTime)) {
-      const preparedAhead = getBufferedAhead(video, currentTime || targetTime);
+      if (Math.abs(currentTime - targetTime) > 0.25 && getBufferedAhead(video, targetTime) > 0.75) {
+        video.currentTime = targetTime;
+        await Promise.race([waitForSeekCompletion(video, 650), wait(650)]).catch(() => {});
+      }
+      const preparedAhead = getBufferedAhead(video, targetTime);
       if (preparedAhead < 1.2) {
         setLocalBuffering(true);
         await waitForBufferedAhead(video, targetTime, 2.5, 2200).catch(() => false);
@@ -3746,11 +3750,15 @@ function markViewerPausedPrepared(time = 0) {
 }
 
 function isViewerPausedPreparationFresh(targetTime = 0) {
+  const preparedTime = state.viewerPausedPreparedTime || 0;
+  const delta = (targetTime || 0) - preparedTime;
+  const preparedWindow = VIEWER_JOIN_GATE_MS / 1000 + 1.5;
   return Boolean(
     state.viewerPausedPreparedPath &&
       state.viewerPausedPreparedPath === (dom.remoteVideo.dataset.storagePath || "") &&
       Date.now() - state.viewerPausedPreparedAt < IDLE_ROOM_TTL_MS &&
-      Math.abs((state.viewerPausedPreparedTime || 0) - (targetTime || 0)) < 3
+      delta >= -0.5 &&
+      delta <= preparedWindow
   );
 }
 
@@ -3795,6 +3803,75 @@ async function waitForBufferedAhead(video, time, seconds = 3, timeout = 4500) {
     timer = window.setInterval(check, 180);
     check();
   });
+}
+
+function waitForPausedWarmup(video, targetTime, warmEnd, seconds, timeout, gateToken) {
+  const needed = Math.max(Math.min(seconds, Math.max(warmEnd - targetTime, 0.75)), 0.75);
+  const startedAt = Date.now();
+
+  return new Promise((resolve) => {
+    let timer = null;
+    const events = ["timeupdate", "progress", "canplay", "canplaythrough", "playing"];
+    const cleanup = () => {
+      clearInterval(timer);
+      events.forEach((eventName) => video.removeEventListener(eventName, check));
+      resolve();
+    };
+    const check = () => {
+      if (!state.viewerJoinGateActive || gateToken !== state.viewerJoinGateToken) {
+        cleanup();
+        return;
+      }
+      if (video.currentTime >= warmEnd - 0.25 || getBufferedAhead(video, targetTime) >= needed) {
+        cleanup();
+        return;
+      }
+      if (Date.now() - startedAt >= timeout) {
+        cleanup();
+      }
+    };
+
+    events.forEach((eventName) => video.addEventListener(eventName, check));
+    timer = window.setInterval(check, 140);
+    check();
+  });
+}
+
+async function warmPausedViewerBuffer(video, targetTime, duration, gateToken) {
+  const warmSeconds = duration ? Math.min(VIEWER_JOIN_GATE_MS / 1000, Math.max(duration - targetTime - 0.3, 0.75)) : 10;
+  const warmEnd = clampTime(targetTime + warmSeconds, duration);
+  let started = false;
+
+  try {
+    video.muted = true;
+    video.volume = 0;
+    started = await video.play().then(
+      () => true,
+      () => false
+    );
+
+    if (started) {
+      const remaining = state.viewerJoinGateUntil ? getViewerJoinGateRemainingMs() : VIEWER_JOIN_GATE_MS;
+      const warmTimeout = Math.max(Math.min(remaining - 650, VIEWER_JOIN_GATE_MS - 1200), 1600);
+      await waitForPausedWarmup(video, targetTime, warmEnd, warmSeconds, warmTimeout, gateToken);
+    } else {
+      await waitForBufferedAhead(video, targetTime, warmSeconds, VIEWER_JOIN_GATE_MS - 1500).catch(() => false);
+    }
+  } finally {
+    video.pause();
+    video.playbackRate = 1;
+    video.muted = false;
+    video.volume = 1;
+
+    if (gateToken === state.viewerJoinGateToken) {
+      if (Math.abs((video.currentTime || 0) - targetTime) > 0.25) {
+        video.currentTime = targetTime;
+        await Promise.race([waitForSeekCompletion(video, 1200), wait(1200)]).catch(() => {});
+      }
+      await Promise.race([waitForPlayable(video), wait(1500)]).catch(() => {});
+      await waitForBufferedAhead(video, targetTime, Math.min(warmSeconds, 6), 1800).catch(() => false);
+    }
+  }
 }
 
 function updateViewerJoinGateCountdown() {
@@ -3952,18 +4029,7 @@ async function preparePausedViewerAfterStartGesture(sync = null, gateToken = sta
       await Promise.race([waitForSeekCompletion(video, 1800), wait(1800)]).catch(() => {});
     }
     await Promise.race([waitForPlayable(video), wait(2200)]).catch(() => {});
-    await waitForBufferedAhead(video, targetTime, 10, VIEWER_JOIN_GATE_MS - 1500).catch(() => false);
-    video.muted = false;
-    video.volume = 1;
-    const primed = await video.play().then(
-      () => true,
-      () => false
-    );
-    if (primed) {
-      video.pause();
-      video.currentTime = targetTime;
-    }
-    await waitForBufferedAhead(video, targetTime, 10, 2200).catch(() => false);
+    await warmPausedViewerBuffer(video, targetTime, duration, gateToken);
     markViewerPausedPrepared(targetTime);
   } finally {
     state.viewerStorageInitialSynced = true;
