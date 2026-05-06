@@ -255,6 +255,7 @@ const state = {
   hostSyncSuppressed: false,
   localBuffering: false,
   lastBufferingSyncAt: 0,
+  hostBufferingTimer: null,
   viewerStorageSyncing: false,
   viewerStorageInitialSynced: false,
   viewerInitialLoadActive: false,
@@ -2339,6 +2340,7 @@ function resetHostMovieState() {
   stopHostVideoRenderLoop();
   releaseHostWakeLock();
   cleanupYouTubePlayer();
+  clearHostBufferingTimer();
 
   if (state.hostCaptureStream) {
     state.hostCaptureStream.getTracks().forEach((track) => track.stop());
@@ -3658,7 +3660,8 @@ function scheduleViewerBuffering(delay = 1300) {
     state.viewerBufferingTimer = null;
     const sync = state.roomData?.sync || {};
     const hostExpectsMotion = Boolean(sync.isPlaying || dom.remoteVideo.seeking);
-    if (!state.isHost && isStorageMode() && state.screen === "room" && hostExpectsMotion) {
+    const videoActuallyWaiting = dom.remoteVideo.readyState < 3 || getBufferedAhead(dom.remoteVideo) < 0.35;
+    if (!state.isHost && isStorageMode() && state.screen === "room" && hostExpectsMotion && videoActuallyWaiting) {
       state.localBuffering = true;
       updateBufferingOverlay();
     }
@@ -3747,12 +3750,16 @@ function isViewerPausedPreparationFresh(targetTime = 0) {
 }
 
 function getBufferedAhead(video, time = video.currentTime || 0) {
-  for (let index = 0; index < video.buffered.length; index += 1) {
-    const start = video.buffered.start(index);
-    const end = video.buffered.end(index);
-    if (time >= start - 0.05 && time <= end + 0.05) {
-      return Math.max(end - time, 0);
+  try {
+    for (let index = 0; index < video.buffered.length; index += 1) {
+      const start = video.buffered.start(index);
+      const end = video.buffered.end(index);
+      if (time >= start - 0.05 && time <= end + 0.05) {
+        return Math.max(end - time, 0);
+      }
     }
+  } catch (error) {
+    return 0;
   }
   return 0;
 }
@@ -4297,30 +4304,57 @@ function updateBufferingOverlay() {
   dom.bufferingOverlay.classList.toggle("hidden", !shouldShow);
 }
 
+function clearHostBufferingTimer() {
+  if (!state.hostBufferingTimer) {
+    return;
+  }
+
+  clearTimeout(state.hostBufferingTimer);
+  state.hostBufferingTimer = null;
+}
+
+function isHostActuallyBuffering() {
+  if (dom.hostVideo.paused || dom.hostVideo.ended || state.hostSyncSuppressed) {
+    return false;
+  }
+
+  return dom.hostVideo.readyState < 3 || getBufferedAhead(dom.hostVideo) < 0.35;
+}
+
 function handleHostBufferingEvent(isBuffering) {
   if (!state.isHost || !state.localPrepared || !state.roomId || state.hostSyncSuppressed || isYoutubeMode()) {
     return;
   }
 
-  const now = Date.now();
   if (isBuffering) {
     if ((dom.hostVideo.paused && !dom.hostVideo.seeking) || dom.hostVideo.ended) {
+      clearHostBufferingTimer();
       setLocalBuffering(false);
       return;
     }
 
-    setLocalBuffering(true);
-    if (now - state.lastBufferingSyncAt < 900) {
-      return;
-    }
-    state.lastBufferingSyncAt = now;
-    const duration = getHostSeekDuration();
-    publishManualHostSync(dom.hostVideo.currentTime || 0, duration, true, true).catch((error) =>
-      console.error("buffering sync error", error)
-    );
+    clearHostBufferingTimer();
+    state.hostBufferingTimer = window.setTimeout(() => {
+      state.hostBufferingTimer = null;
+      if (!state.isHost || !state.roomId || !isStorageMode() || !isHostActuallyBuffering()) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - state.lastBufferingSyncAt < 2500) {
+        return;
+      }
+      state.lastBufferingSyncAt = now;
+      setLocalBuffering(true);
+      const duration = getHostSeekDuration();
+      publishManualHostSync(dom.hostVideo.currentTime || 0, duration, true, true).catch((error) =>
+        console.error("buffering sync error", error)
+      );
+    }, 2200);
     return;
   }
 
+  clearHostBufferingTimer();
   setLocalBuffering(false);
   syncHostPlayback(true);
 }
@@ -6482,6 +6516,8 @@ function cleanupMediaResources() {
     clearInterval(state.idleCleanupTimer);
     state.idleCleanupTimer = null;
   }
+  clearHostBufferingTimer();
+  clearViewerBufferingTimer();
   cleanupViewerReconnect();
   stopViewerCanvasLoop();
   stopHostVideoRenderLoop();
